@@ -1,7 +1,13 @@
 module mysql_cleanup
 
-go 1.21
+go 1.21.0
+
+toolchain go1.24.5
 
 require github.com/joho/godotenv v1.5.1
 
-require gopkg.in/yaml.v3 v3.0.1 // indirect
+require (
+	filippo.io/edwards25519 v1.1.0 // indirect
+	github.com/go-sql-driver/mysql v1.9.3 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
+)

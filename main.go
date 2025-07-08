@@ -76,6 +76,15 @@ func main() {
 			log.Printf("Error parsing config file: %v\n", err)
 		}
 	}
+
+	// Fetch and display table data if database and table are specified
+	if config.DB != "" && config.Table != "" {
+		fmt.Println("\nTable Data:")
+		fmt.Println("===========")
+		if err := fetchAndDisplayTableData(config); err != nil {
+			log.Printf("Error fetching table data: %v\n", err)
+		}
+	}
 }
 
 // parseAndDisplayConfig reads and parses the YAML configuration file

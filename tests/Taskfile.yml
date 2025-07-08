@@ -1,7 +1,9 @@
 version: '3'
 
+env:
+  TABLE: account_user
+
 tasks:
-  # Build the Go application
   build:
     desc: Build the MySQL cleanup binary
     cmds:
@@ -13,15 +15,19 @@ tasks:
     generates:
       - ../bin/mysql_cleanup
 
-  # Test the application (build, reset db, wait, run)
+  wait-db:
+    desc: Polls the database until SELECT COUNT(*) FROM $TABLE succeeds
+    cmds:
+      - echo "Waiting for database table $TABLE to be ready..." && for i in {1..20}; do if docker-compose exec -T mysql mysql -u test_user -ptest_password acme_corp -e "SELECT COUNT(*) FROM $TABLE;" >/dev/null 2>&1; then echo "Table $TABLE is ready!"; exit 0; fi; echo "Table $TABLE not ready yet, waiting... ($i)"; sleep 1; done; echo "Timed out waiting for table $TABLE to be ready." && exit 1
+
   test:
     desc: Build, reset database, and test the application
     cmds:
       - task: build
       - task: reset
-      - ../bin/mysql_cleanup -config config.yaml -host localhost -port 3306 -user test_user -password test_password -db acme_corp
+      - task: wait-db
+      - ../bin/mysql_cleanup -config config.yaml -host localhost -port 3306 -user test_user -password test_password -db acme_corp -table $TABLE
 
-  # Start the MySQL container with both databases
   up:
     desc: Start MySQL container with test databases
     cmds:
@@ -29,57 +35,48 @@ tasks:
     status:
       - docker-compose ps | grep -q "mysql.*Up"
 
-  # Stop and remove the container
   down:
     desc: Stop and remove MySQL container
     cmds:
       - docker-compose down
 
-  # Restart the container (down + up)
   restart:
     desc: Restart MySQL container
     cmds:
       - task: down
       - task: up
 
-  # show logs
   logs:
     desc: Show container logs
     cmds:
       - docker-compose logs mysql -f
 
-  # Show container status
   status:
     desc: Show container status
     cmds:
       - docker-compose ps
 
-  # Connect to MySQL CLI
   mysql:
     desc: Connect to MySQL CLI
     cmds:
       - docker-compose exec mysql mysql -u root -proot
 
-  # Show databases
   show-dbs:
     desc: Show available databases
     cmds:
       - docker-compose exec mysql mysql -u root -proot -e "SHOW DATABASES;"
 
-  # Show tables in acme_corp
   show-tables:
     desc: Show tables in acme_corp database
     cmds:
       - docker-compose exec mysql mysql -u root -proot acme_corp -e "SHOW TABLES;"
 
-  # Reset databases (down + up)
   reset:
     desc: Reset databases (remove and recreate)
     cmds:
       - task: down
       - docker-compose up -d --force-recreate
 
-  # Clean up everything including volumes
   clean:
     desc: Clean up everything including volumes
     cmds:
