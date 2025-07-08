@@ -1,0 +1,139 @@
+databases:
+  acme_corp:
+    truncate:
+      - system_audit_log
+
+    update:
+      account_user:
+        columns:
+          email: random_email
+        exclude_clause: "email RLIKE '.*@acme(-corp|corp|platform)\\.com'"
+
+      staff_profile:
+        columns:
+          email: random_email
+          extension: NULL
+          full_name: random_name
+          internal_username: NULL
+          phone_number: random_phone_short
+          position_title: NULL
+        exclude_clause: "email RLIKE '.*@acme(-corp|corp|platform)\\.com' OR is_internal_staff = 1"
+
+      organization_unit:
+        columns:
+          enable_notifications: 0
+          notification_recipients: random_email
+        exclude_clause: "notification_recipients RLIKE '.*@acme(-corp|corp|platform)\\.com'"
+
+      external_booking:
+        columns:
+          booking_agent_username: random_username
+          customer_first_name: random_firstname
+          customer_last_name: random_lastname
+          confirmation_url: NULL
+          notes: random_text
+          contact_phone: random_phone_short
+          additional_requests: random_text
+
+      external_contact:
+        columns:
+          address: random_address
+          city: random_city
+          country: random_country_code
+          email: random_email
+          fax_number: random_phone_short
+          phone_primary: random_phone_short
+          phone_company: random_phone_short
+          phone_home: random_phone_short
+          phone_work: random_phone_short
+          external_id: NULL
+          postal_code: random_postalcode
+          state: random_state
+
+      report_attachment:
+        columns:
+          email_body: random_text
+          sender_address: random_email
+          subject: random_email_subject
+          recipient_address: random_email
+          file_name: random_file_name
+        exclude_clause: "sender_address RLIKE '.*@acme(-corp|corp|platform)\\.com'"
+
+      booking:
+        columns:
+          address: random_address
+          num_adults: NULL
+          num_children: NULL
+          organization: random_company
+          email: random_email
+          end_time: NULL
+          first_name: random_firstname
+          group_label: NULL
+          last_name: random_lastname
+          phone_main: random_phone_short
+          phone_mobile: random_phone_short
+          phone_home: random_phone_short
+          phone_work: random_phone_short
+          booking_reference: random_number_txt
+          room_id: random_room_number_txt
+          start_time: NULL
+        exclude_clause: "email RLIKE '.*@acme(-corp|corp|platform)\\.com'"
+
+      social_profile_link:
+        columns:
+          conversation_id: NULL
+          display_name: random_name
+          social_id: random_id
+          first_name: random_firstname
+          last_name: random_lastname
+          profile_image_url: NULL
+          raw_data: random_text
+          platform_id: random_id
+
+      support_ticket:
+        columns:
+          customer_firstname: random_firstname
+          customer_lastname: random_lastname
+          room_ref: random_room_number_txt
+          start_time: NULL
+          notes: random_text
+
+      contact_policy:
+        columns:
+          contact_number: random_number_txt
+          contact_emails: random_email
+          is_disabled: 1
+        exclude_clause: "contact_emails RLIKE '.*@acme(-corp|corp|platform)\\.com.*'"
+
+      email_log:
+        columns:
+          body: random_text
+          from_email: random_email
+          subject: random_email_subject
+
+      email_log_cc:
+        columns:
+          cc_string: random_email
+
+      email_log_to:
+        columns:
+          to_string: random_email
+
+      escalation_contact:
+        columns:
+          phone: random_phone_short
+
+      escalation_policy:
+        columns:
+          phone: random_phone_short
+          emails: random_email
+          is_disabled: 1
+        exclude_clause: "emails RLIKE '.*@acme(-corp|corp|platform)\\.com.*'"
+
+      custom_field_value:
+        columns:
+          value: random_name
+
+      internal_note:
+        columns:
+          details: random_text

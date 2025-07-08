@@ -1,0 +1,170 @@
+-- Sample schema for database tables
+-- Users table
+CREATE TABLE account_user (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  email VARCHAR(255) UNIQUE,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Staff table
+CREATE TABLE staff_profile (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  email VARCHAR(255),
+  extension VARCHAR(10),
+  full_name VARCHAR(255),
+  internal_username VARCHAR(255),
+  phone_number VARCHAR(20),
+  position_title VARCHAR(100),
+  is_internal_staff BOOLEAN DEFAULT FALSE
+);
+
+-- Organization units
+CREATE TABLE organization_unit (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  enable_notifications BOOLEAN DEFAULT FALSE,
+  notification_recipients TEXT
+);
+
+-- External bookings
+CREATE TABLE external_booking (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  booking_agent_username VARCHAR(255),
+  customer_first_name VARCHAR(100),
+  customer_last_name VARCHAR(100),
+  confirmation_url TEXT,
+  message TEXT,
+  contact_phone VARCHAR(20),
+  additional_requests TEXT
+);
+
+-- External contacts
+CREATE TABLE external_contact (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  address TEXT,
+  city VARCHAR(100),
+  state VARCHAR(100),
+  postal_code VARCHAR(20),
+  country VARCHAR(2),
+  email VARCHAR(255),
+  fax_number VARCHAR(20),
+  phone_primary VARCHAR(20),
+  phone_company VARCHAR(20),
+  phone_home VARCHAR(20),
+  phone_work VARCHAR(20),
+  external_id VARCHAR(100)
+);
+
+-- Report attachments
+CREATE TABLE report_attachment (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  email_body TEXT,
+  sender_address VARCHAR(255),
+  subject VARCHAR(255),
+  recipient_address VARCHAR(255),
+  file_name VARCHAR(255)
+);
+
+-- Bookings
+CREATE TABLE booking (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  address TEXT,
+  num_adults INT,
+  num_children INT,
+  organization VARCHAR(255),
+  email VARCHAR(255),
+  end_time DATETIME,
+  first_name VARCHAR(100),
+  last_name VARCHAR(100),
+  group_label VARCHAR(100),
+  phone_main VARCHAR(20),
+  phone_mobile VARCHAR(20),
+  phone_home VARCHAR(20),
+  phone_work VARCHAR(20),
+  booking_reference VARCHAR(100),
+  room_id VARCHAR(20),
+  start_time DATETIME
+);
+
+-- Social profile links
+CREATE TABLE social_profile_link (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  conversation_id VARCHAR(100),
+  display_name VARCHAR(100),
+  social_id VARCHAR(100),
+  first_name VARCHAR(100),
+  last_name VARCHAR(100),
+  profile_image_url TEXT,
+  raw_data TEXT,
+  platform_id VARCHAR(100)
+);
+
+-- Support tickets
+CREATE TABLE support_ticket (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  customer_firstname VARCHAR(100),
+  customer_lastname VARCHAR(100),
+  room_ref VARCHAR(50),
+  start_time DATETIME,
+  notes TEXT
+);
+
+-- Contact policy rules
+CREATE TABLE contact_policy (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  contact_number VARCHAR(100),
+  contact_emails TEXT,
+  is_disabled BOOLEAN DEFAULT FALSE
+);
+
+-- Email logs
+CREATE TABLE email_log (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  body TEXT,
+  from_email VARCHAR(255),
+  subject VARCHAR(255)
+);
+
+CREATE TABLE email_log_cc (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  email_log_id BIGINT,
+  cc_string VARCHAR(255),
+  FOREIGN KEY (email_log_id) REFERENCES email_log(id)
+);
+
+CREATE TABLE email_log_to (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  email_log_id BIGINT,
+  to_string VARCHAR(255),
+  FOREIGN KEY (email_log_id) REFERENCES email_log(id)
+);
+
+-- Escalation
+CREATE TABLE escalation_contact (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  phone VARCHAR(20)
+);
+
+CREATE TABLE escalation_policy (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  phone VARCHAR(20),
+  emails TEXT,
+  is_disabled BOOLEAN DEFAULT FALSE
+);
+
+-- Miscellaneous
+CREATE TABLE custom_field_value (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  value VARCHAR(255)
+);
+
+CREATE TABLE internal_note (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  details TEXT
+);
+
+-- Audit table (for truncate testing)
+CREATE TABLE system_audit_log (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  action VARCHAR(255),
+  performed_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);

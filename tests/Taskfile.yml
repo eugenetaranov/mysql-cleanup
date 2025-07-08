@@ -1,0 +1,67 @@
+version: '3'
+
+tasks:
+  # Start the MySQL container with both databases
+  up:
+    desc: Start MySQL container with test databases
+    cmds:
+      - docker-compose up -d
+    status:
+      - docker-compose ps | grep -q "mysql.*Up"
+
+  # Stop and remove the container
+  down:
+    desc: Stop and remove MySQL container
+    cmds:
+      - docker-compose down
+
+  # Restart the container (down + up)
+  restart:
+    desc: Restart MySQL container
+    cmds:
+      - task: down
+      - task: up
+
+  # show logs
+  logs:
+    desc: Show container logs
+    cmds:
+      - docker-compose logs mysql -f
+
+  # Show container status
+  status:
+    desc: Show container status
+    cmds:
+      - docker-compose ps
+
+  # Connect to MySQL CLI
+  mysql:
+    desc: Connect to MySQL CLI
+    cmds:
+      - docker-compose exec mysql mysql -u root -proot
+
+  # Show databases
+  show-dbs:
+    desc: Show available databases
+    cmds:
+      - docker-compose exec mysql mysql -u root -proot -e "SHOW DATABASES;"
+
+  # Show tables in acme_corp
+  show-tables:
+    desc: Show tables in acme_corp database
+    cmds:
+      - docker-compose exec mysql mysql -u root -proot acme_corp -e "SHOW TABLES;"
+
+  # Reset databases (down + up)
+  reset:
+    desc: Reset databases (remove and recreate)
+    cmds:
+      - task: down
+      - docker-compose up -d --force-recreate
+
+  # Clean up everything including volumes
+  clean:
+    desc: Clean up everything including volumes
+    cmds:
+      - docker-compose down -v
+      - docker-compose rm -f

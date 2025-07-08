@@ -1,0 +1,237 @@
+-- Sample data for database tables
+-- Account users
+INSERT INTO account_user (email, created_at) VALUES
+('john.doe@example.com', '2023-01-01 10:00:00'),
+('sarah.smith@example.com', '2023-01-02 11:30:00'),
+('mike.jones@example.com', '2023-01-03 09:15:00'),
+('lisa.brown@example.com', '2023-01-04 14:20:00'),
+('david.wilson@example.com', '2023-01-05 16:45:00'),
+('emma.davis@example.com', '2023-01-06 08:30:00'),
+('james.taylor@example.com', '2023-01-07 13:10:00'),
+('olivia.white@example.com', '2023-01-08 15:25:00'),
+('william.clark@example.com', '2023-01-09 11:40:00'),
+('sophia.hall@example.com', '2023-01-10 10:55:00');
+
+-- Staff profiles
+INSERT INTO staff_profile (email, extension, full_name, internal_username, phone_number, position_title, is_internal_staff) VALUES
+('manager.one@example.com', '101', 'Manager One', 'mone', '+1-555-0101', 'Senior Manager', true),
+('staff.two@example.com', '102', 'Staff Two', 'stwo', '+1-555-0102', 'Staff Member', false),
+('supervisor.three@example.com', '103', 'Supervisor Three', 'sthree', '+1-555-0103', 'Supervisor', true),
+('agent.four@example.com', '104', 'Agent Four', 'afour', '+1-555-0104', 'Customer Agent', false),
+('lead.five@example.com', '105', 'Lead Five', 'lfive', '+1-555-0105', 'Team Lead', true),
+('support.six@example.com', '106', 'Support Six', 'ssix', '+1-555-0106', 'Support Staff', false),
+('admin.seven@example.com', '107', 'Admin Seven', 'aseven', '+1-555-0107', 'Administrator', true),
+('rep.eight@example.com', '108', 'Rep Eight', 'reight', '+1-555-0108', 'Sales Rep', false),
+('coord.nine@example.com', '109', 'Coordinator Nine', 'cnine', '+1-555-0109', 'Coordinator', true),
+('analyst.ten@example.com', '110', 'Analyst Ten', 'aten', '+1-555-0110', 'Business Analyst', false);
+
+-- Organization units
+INSERT INTO organization_unit (enable_notifications, notification_recipients) VALUES
+(true, 'team1@example.com,lead1@example.com'),
+(false, NULL),
+(true, 'support@example.com'),
+(true, 'sales@example.com,marketing@example.com'),
+(false, 'inactive@example.com'),
+(true, 'operations@example.com'),
+(true, 'finance@example.com,accounting@example.com'),
+(false, NULL),
+(true, 'logistics@example.com'),
+(true, 'management@example.com,executives@example.com');
+
+-- External bookings
+INSERT INTO external_booking (booking_agent_username, customer_first_name, customer_last_name, confirmation_url, message, contact_phone, additional_requests) VALUES
+('agent1', 'Robert', 'Johnson', 'https://booking.example.com/conf/123', 'Business trip booking', '+1-555-1001', 'Early check-in requested'),
+('agent2', 'Patricia', 'Williams', 'https://booking.example.com/conf/124', 'Family vacation', '+1-555-1002', 'Extra bed needed'),
+('agent3', 'Michael', 'Brown', 'https://booking.example.com/conf/125', 'Conference stay', '+1-555-1003', 'Near conference room'),
+('agent4', 'Jennifer', 'Davis', 'https://booking.example.com/conf/126', 'Weekend getaway', '+1-555-1004', 'Late checkout'),
+('agent5', 'Christopher', 'Miller', 'https://booking.example.com/conf/127', 'Business meeting', '+1-555-1005', 'Quiet room preferred'),
+('agent6', 'Elizabeth', 'Wilson', 'https://booking.example.com/conf/128', 'Anniversary celebration', '+1-555-1006', 'Room decoration'),
+('agent7', 'David', 'Moore', 'https://booking.example.com/conf/129', 'Family reunion', '+1-555-1007', 'Connecting rooms'),
+('agent8', 'Margaret', 'Taylor', 'https://booking.example.com/conf/130', 'Business conference', '+1-555-1008', 'High floor'),
+('agent9', 'Joseph', 'Anderson', 'https://booking.example.com/conf/131', 'Vacation booking', '+1-555-1009', 'Ocean view'),
+('agent10', 'Susan', 'Thomas', 'https://booking.example.com/conf/132', 'Wedding party', '+1-555-1010', 'Suite requested');
+
+-- External contacts
+INSERT INTO external_contact (address, city, state, postal_code, country, email, fax_number, phone_primary, phone_company, phone_home, phone_work, external_id) VALUES
+('123 Oak Street', 'New York', 'NY', '10001', 'US', 'contact1@example.com', '+1-555-3001', '+1-555-3002', '+1-555-3003', '+1-555-3004', '+1-555-3005', 'EXT001'),
+('456 Maple Ave', 'Los Angeles', 'CA', '90001', 'US', 'contact2@example.com', '+1-555-3006', '+1-555-3007', '+1-555-3008', '+1-555-3009', '+1-555-3010', 'EXT002'),
+('789 Pine Road', 'Chicago', 'IL', '60601', 'US', 'contact3@example.com', '+1-555-3011', '+1-555-3012', '+1-555-3013', '+1-555-3014', '+1-555-3015', 'EXT003'),
+('321 Cedar Lane', 'Houston', 'TX', '77001', 'US', 'contact4@example.com', '+1-555-3016', '+1-555-3017', '+1-555-3018', '+1-555-3019', '+1-555-3020', 'EXT004'),
+('654 Birch Blvd', 'Phoenix', 'AZ', '85001', 'US', 'contact5@example.com', '+1-555-3021', '+1-555-3022', '+1-555-3023', '+1-555-3024', '+1-555-3025', 'EXT005'),
+('987 Elm Court', 'Philadelphia', 'PA', '19101', 'US', 'contact6@example.com', '+1-555-3026', '+1-555-3027', '+1-555-3028', '+1-555-3029', '+1-555-3030', 'EXT006'),
+('147 Spruce Way', 'San Antonio', 'TX', '78201', 'US', 'contact7@example.com', '+1-555-3031', '+1-555-3032', '+1-555-3033', '+1-555-3034', '+1-555-3035', 'EXT007'),
+('258 Ash Drive', 'San Diego', 'CA', '92101', 'US', 'contact8@example.com', '+1-555-3036', '+1-555-3037', '+1-555-3038', '+1-555-3039', '+1-555-3040', 'EXT008'),
+('369 Walnut St', 'Dallas', 'TX', '75201', 'US', 'contact9@example.com', '+1-555-3041', '+1-555-3042', '+1-555-3043', '+1-555-3044', '+1-555-3045', 'EXT009'),
+('741 Beech Road', 'San Jose', 'CA', '95101', 'US', 'contact10@example.com', '+1-555-3046', '+1-555-3047', '+1-555-3048', '+1-555-3049', '+1-555-3050', 'EXT010');
+
+-- Report attachments
+INSERT INTO report_attachment (email_body, sender_address, subject, recipient_address, file_name) VALUES
+('Monthly sales report attached.', 'sales@example.com', 'January Sales Report', 'manager@example.com', 'sales_report_jan.pdf'),
+('Customer feedback summary.', 'feedback@example.com', 'Q1 Customer Feedback', 'support@example.com', 'feedback_q1.xlsx'),
+('Financial analysis for Q2.', 'finance@example.com', 'Q2 Financial Report', 'executive@example.com', 'finance_q2.pdf'),
+('Marketing campaign results.', 'marketing@example.com', 'Campaign Analysis', 'director@example.com', 'campaign_results.pptx'),
+('System performance metrics.', 'it@example.com', 'System Performance Report', 'tech@example.com', 'performance_metrics.pdf'),
+('HR quarterly update.', 'hr@example.com', 'HR Quarterly Report', 'management@example.com', 'hr_report_q2.pdf'),
+('Inventory status report.', 'inventory@example.com', 'Inventory Status', 'operations@example.com', 'inventory_status.xlsx'),
+('Customer service metrics.', 'support@example.com', 'Support Team Performance', 'supervisor@example.com', 'support_metrics.pdf'),
+('Project milestone report.', 'project@example.com', 'Project Status Update', 'stakeholders@example.com', 'project_status.pptx'),
+('Annual compliance report.', 'compliance@example.com', 'Annual Compliance Review', 'legal@example.com', 'compliance_2023.pdf');
+
+-- Bookings
+INSERT INTO booking (address, num_adults, num_children, organization, email, end_time, first_name, last_name, group_label, 
+                    phone_main, phone_mobile, phone_home, phone_work, booking_reference, room_id, start_time) VALUES
+('123 Main St, City1, ST 12345', 2, 0, 'ABC Corp', 'booking1@example.com', '2024-02-15 12:00:00', 'John', 'Smith', 'Business', 
+ '+1-555-2001', '+1-555-2002', '+1-555-2003', '+1-555-2004', 'BK001', 'RM101', '2024-02-10 14:00:00'),
+('456 Oak Ave, City2, ST 23456', 2, 2, 'Family Trip', 'booking2@example.com', '2024-02-20 11:00:00', 'Mary', 'Johnson', 'Family', 
+ '+1-555-2005', '+1-555-2006', '+1-555-2007', '+1-555-2008', 'BK002', 'RM102', '2024-02-17 15:00:00'),
+('789 Pine Rd, City3, ST 34567', 1, 0, 'XYZ Inc', 'booking3@example.com', '2024-02-25 10:00:00', 'Robert', 'Williams', 'Business', 
+ '+1-555-2009', '+1-555-2010', '+1-555-2011', '+1-555-2012', 'BK003', 'RM103', '2024-02-22 16:00:00'),
+('321 Elm St, City4, ST 45678', 4, 1, 'Group Tour', 'booking4@example.com', '2024-03-01 09:00:00', 'Patricia', 'Brown', 'Tour', 
+ '+1-555-2013', '+1-555-2014', '+1-555-2015', '+1-555-2016', 'BK004', 'RM104', '2024-02-27 17:00:00'),
+('654 Maple Ln, City5, ST 56789', 2, 0, 'Conference', 'booking5@example.com', '2024-03-05 14:00:00', 'Michael', 'Davis', 'Event', 
+ '+1-555-2017', '+1-555-2018', '+1-555-2019', '+1-555-2020', 'BK005', 'RM105', '2024-03-02 13:00:00'),
+('987 Cedar Ct, City6, ST 67890', 3, 2, 'Family Reunion', 'booking6@example.com', '2024-03-10 15:00:00', 'Elizabeth', 'Miller', 'Family', 
+ '+1-555-2021', '+1-555-2022', '+1-555-2023', '+1-555-2024', 'BK006', 'RM106', '2024-03-07 12:00:00'),
+('147 Birch Dr, City7, ST 78901', 2, 0, 'DEF Corp', 'booking7@example.com', '2024-03-15 16:00:00', 'William', 'Wilson', 'Business', 
+ '+1-555-2025', '+1-555-2026', '+1-555-2027', '+1-555-2028', 'BK007', 'RM107', '2024-03-12 11:00:00'),
+('258 Spruce Way, City8, ST 89012', 1, 0, 'Solo Trip', 'booking8@example.com', '2024-03-20 17:00:00', 'Jennifer', 'Moore', 'Individual', 
+ '+1-555-2029', '+1-555-2030', '+1-555-2031', '+1-555-2032', 'BK008', 'RM108', '2024-03-17 10:00:00'),
+('369 Ash Pl, City9, ST 90123', 2, 1, 'Weekend Trip', 'booking9@example.com', '2024-03-25 13:00:00', 'David', 'Taylor', 'Leisure', 
+ '+1-555-2033', '+1-555-2034', '+1-555-2035', '+1-555-2036', 'BK009', 'RM109', '2024-03-22 09:00:00'),
+('741 Walnut Blvd, City10, ST 01234', 4, 0, 'GHI Ltd', 'booking10@example.com', '2024-03-30 12:00:00', 'Susan', 'Anderson', 'Corporate', 
+ '+1-555-2037', '+1-555-2038', '+1-555-2039', '+1-555-2040', 'BK010', 'RM110', '2024-03-27 14:00:00');
+
+-- social_profile_link
+INSERT INTO social_profile_link (conversation_id, display_name, social_id, first_name, last_name, profile_image_url, raw_data, platform_id) VALUES
+('conv_001', 'John Doe', 'fb_001', 'John', 'Doe', NULL, '{}', 'facebook'),
+('conv_002', 'Jane Smith', 'tw_002', 'Jane', 'Smith', NULL, '{}', 'twitter');
+
+-- Support tickets
+INSERT INTO support_ticket (customer_firstname, customer_lastname, room_ref, start_time, notes) VALUES
+('Thomas', 'Anderson', 'RM201', '2024-02-01 09:00:00', 'AC not working properly'),
+('Maria', 'Garcia', 'RM202', '2024-02-02 10:30:00', 'Request for extra towels'),
+('James', 'Wilson', 'RM203', '2024-02-03 11:15:00', 'WiFi connection issues'),
+('Linda', 'Martinez', 'RM204', '2024-02-04 14:20:00', 'Noise complaint from next room'),
+('William', 'Taylor', 'RM205', '2024-02-05 16:45:00', 'TV remote not functioning'),
+('Patricia', 'Brown', 'RM206', '2024-02-06 08:30:00', 'Request for late checkout'),
+('Michael', 'Lee', 'RM207', '2024-02-07 13:10:00', 'Room cleaning request'),
+('Elizabeth', 'White', 'RM208', '2024-02-08 15:25:00', 'Missing room service order'),
+('David', 'Harris', 'RM209', '2024-02-09 11:40:00', 'Bathroom maintenance needed'),
+('Jennifer', 'Clark', 'RM210', '2024-02-10 10:55:00', 'Lost room key');
+
+-- Contact policy
+INSERT INTO contact_policy (contact_number, contact_emails, is_disabled) VALUES
+('POL001', 'support@example.com,emergency@example.com', false),
+('POL002', 'sales@example.com', true),
+('POL003', 'maintenance@example.com,facilities@example.com', false),
+('POL004', 'security@example.com', false),
+('POL005', 'housekeeping@example.com', true),
+('POL006', 'frontdesk@example.com,concierge@example.com', false),
+('POL007', 'events@example.com', false),
+('POL008', 'dining@example.com,restaurant@example.com', true),
+('POL009', 'vip@example.com', false),
+('POL010', 'complaints@example.com,feedback@example.com', false);
+
+-- Email logs
+INSERT INTO email_log (body, from_email, subject) VALUES
+('Thank you for your recent stay...', 'noreply@example.com', 'Stay Feedback Request'),
+('Your reservation has been confirmed...', 'bookings@example.com', 'Booking Confirmation'),
+('We hope you enjoyed your stay...', 'feedback@example.com', 'Post-Stay Survey'),
+('Your upcoming stay details...', 'reservations@example.com', 'Pre-arrival Information'),
+('Special offer for valued guests...', 'marketing@example.com', 'Exclusive Offer'),
+('Your receipt for recent stay...', 'billing@example.com', 'Stay Receipt'),
+('Welcome to our rewards program...', 'rewards@example.com', 'Welcome to Rewards'),
+('Important update about your booking...', 'updates@example.com', 'Booking Update'),
+('Thank you for your feedback...', 'support@example.com', 'Feedback Response'),
+('Your special request has been noted...', 'concierge@example.com', 'Request Confirmation');
+
+-- Email log CC recipients
+INSERT INTO email_log_cc (email_log_id, cc_string) VALUES
+(1, 'manager@example.com'),
+(2, 'reservations@example.com'),
+(3, 'quality@example.com'),
+(4, 'frontdesk@example.com'),
+(5, 'sales@example.com'),
+(6, 'accounts@example.com'),
+(7, 'membership@example.com'),
+(8, 'support@example.com'),
+(9, 'customer.care@example.com'),
+(10, 'vip.services@example.com');
+
+-- Email log TO recipients
+INSERT INTO email_log_to (email_log_id, to_string) VALUES
+(1, 'guest1@external.com'),
+(2, 'guest2@external.com'),
+(3, 'guest3@external.com'),
+(4, 'guest4@external.com'),
+(5, 'guest5@external.com'),
+(6, 'guest6@external.com'),
+(7, 'guest7@external.com'),
+(8, 'guest8@external.com'),
+(9, 'guest9@external.com'),
+(10, 'guest10@external.com');
+
+-- Escalation contacts
+INSERT INTO escalation_contact (phone) VALUES
+('+1-555-4001'),
+('+1-555-4002'),
+('+1-555-4003'),
+('+1-555-4004'),
+('+1-555-4005'),
+('+1-555-4006'),
+('+1-555-4007'),
+('+1-555-4008'),
+('+1-555-4009'),
+('+1-555-4010');
+
+-- Escalation policies
+INSERT INTO escalation_policy (phone, emails, is_disabled) VALUES
+('+1-555-5001', 'escalation1@example.com', false),
+('+1-555-5002', 'escalation2@example.com,backup2@example.com', true),
+('+1-555-5003', 'escalation3@example.com', false),
+('+1-555-5004', 'escalation4@example.com,backup4@example.com', false),
+('+1-555-5005', 'escalation5@example.com', true),
+('+1-555-5006', 'escalation6@example.com,backup6@example.com', false),
+('+1-555-5007', 'escalation7@example.com', false),
+('+1-555-5008', 'escalation8@example.com,backup8@example.com', true),
+('+1-555-5009', 'escalation9@example.com', false),
+('+1-555-5010', 'escalation10@example.com,backup10@example.com', false);
+
+-- Custom field values
+INSERT INTO custom_field_value (value) VALUES
+('Premium Guest'),
+('VIP Member'),
+('Corporate Account'),
+('Wedding Party'),
+('Conference Attendee'),
+('Long-term Stay'),
+('First-time Guest'),
+('Loyalty Program'),
+('Business Traveler'),
+('Group Booking');
+
+-- Internal notes
+INSERT INTO internal_note (details) VALUES
+('Guest prefers quiet room away from elevator'),
+('Regular business traveler - always requests late checkout'),
+('Allergic to feather pillows - requires hypoallergenic'),
+('VIP guest - provide welcome amenity'),
+('Previous issues with room service - needs extra attention'),
+('Preferred room type: corner room, high floor'),
+('Special dietary requirements noted'),
+('Anniversary celebration - arrange special decoration'),
+('Corporate rate agreement applies'),
+('Mobility assistance required');
+
+-- System audit log
+INSERT INTO system_audit_log (action, performed_at) VALUES
+('User login', '2024-01-01 08:00:00'),
+('Profile update', '2024-01-01 09:15:00'),
+('Booking modification', '2024-01-01 10:30:00'),
+('Payment processed', '2024-01-01 11:45:00'),
+('Room assignment', '2024-01-01 13:00:00'),
+('Check-in completed', '2024-01-01 14:15:00'),
+('Service request', '2024-01-01 15:30:00'),
+('Feedback submitted', '2024-01-01 16:45:00'),
+('Check-out processed', '2024-01-01 18:00:00'),
+('Report generated', '2024-01-01 19:15:00');
