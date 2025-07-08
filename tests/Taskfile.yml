@@ -19,11 +19,7 @@ tasks:
     cmds:
       - task: build
       - task: reset
-      - echo "Waiting for database to be ready..."
-      - sleep 10
       - ../bin/mysql_cleanup -config config.yaml -host localhost -port 3306 -user test_user -password test_password -db acme_corp
-    deps:
-      - build
 
   # Start the MySQL container with both databases
   up:
