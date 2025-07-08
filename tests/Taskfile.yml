@@ -1,8 +1,5 @@
 version: '3'
 
-env:
-  TABLE: account_user
-
 tasks:
   build:
     desc: Build the MySQL cleanup binary
@@ -14,19 +11,6 @@ tasks:
       - ../go.sum
     generates:
       - ../bin/mysql_cleanup
-
-  wait-db:
-    desc: Polls the database until SELECT COUNT(*) FROM $TABLE succeeds
-    cmds:
-      - echo "Waiting for database table $TABLE to be ready..." && for i in {1..20}; do if docker-compose exec -T mysql mysql -u test_user -ptest_password acme_corp -e "SELECT COUNT(*) FROM $TABLE;" >/dev/null 2>&1; then echo "Table $TABLE is ready!"; exit 0; fi; echo "Table $TABLE not ready yet, waiting... ($i)"; sleep 1; done; echo "Timed out waiting for table $TABLE to be ready." && exit 1
-
-  test:
-    desc: Build, reset database, and test the application
-    cmds:
-      - task: build
-      - task: reset
-      - task: wait-db
-      - ../bin/mysql_cleanup -config config.yaml -host localhost -port 3306 -user test_user -password test_password -db acme_corp -table $TABLE
 
   up:
     desc: Start MySQL container with test databases
@@ -82,3 +66,11 @@ tasks:
     cmds:
       - docker-compose down -v
       - docker-compose rm -f
+
+  test:
+    desc: Build, reset database, and test the application
+    cmds:
+      - task: build
+      - task: reset
+      - sleep 5
+      - ../bin/mysql_cleanup -config config.yaml -host localhost -port 3306 -user test_user -password test_password -db acme_corp -table account_user
