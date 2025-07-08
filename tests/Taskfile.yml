@@ -1,6 +1,30 @@
 version: '3'
 
 tasks:
+  # Build the Go application
+  build:
+    desc: Build the MySQL cleanup binary
+    cmds:
+      - cd .. && go build -o bin/mysql_cleanup
+    sources:
+      - ../main.go
+      - ../go.mod
+      - ../go.sum
+    generates:
+      - ../bin/mysql_cleanup
+
+  # Test the application (build, reset db, wait, run)
+  test:
+    desc: Build, reset database, and test the application
+    cmds:
+      - task: build
+      - task: reset
+      - echo "Waiting for database to be ready..."
+      - sleep 10
+      - ../bin/mysql_cleanup -config config.yaml -host localhost -port 3306 -user test_user -password test_password -db acme_corp
+    deps:
+      - build
+
   # Start the MySQL container with both databases
   up:
     desc: Start MySQL container with test databases

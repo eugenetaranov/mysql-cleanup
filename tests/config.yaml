@@ -110,7 +110,6 @@ databases:
           body: random_text
           from_email: random_email
           subject: random_email_subject
-
       email_log_cc:
         columns:
           cc_string: random_email
@@ -137,3 +136,4 @@ databases:
       internal_note:
         columns:
           details: random_text
+
