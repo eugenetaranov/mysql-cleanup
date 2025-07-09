@@ -96,6 +96,12 @@ type TableDataFetcher interface {
 	FetchAndDisplayTableData(config Config) error
 }
 
+// S3Handler interface for S3 file operations
+type S3Handler interface {
+	DownloadS3File(s3URI string) (string, error)
+	CleanupTempFile(filePath string) error
+}
+
 // Service struct that holds all dependencies
 type Service struct {
 	dbConnector     DatabaseConnector

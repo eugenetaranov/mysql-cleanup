@@ -45,17 +45,41 @@ func (m *MySQLConnector) Close(db *sql.DB) error {
 // YAMLConfigParser implements ConfigParser
 type YAMLConfigParser struct {
 	fileReader FileReader
+	s3Handler  S3Handler
 	logger     Logger
 }
 
-func NewYAMLConfigParser(fileReader FileReader, logger Logger) *YAMLConfigParser {
+func NewYAMLConfigParser(fileReader FileReader, s3Handler S3Handler, logger Logger) *YAMLConfigParser {
 	return &YAMLConfigParser{
 		fileReader: fileReader,
+		s3Handler:  s3Handler,
 		logger:     logger,
 	}
 }
 
 func (y *YAMLConfigParser) ParseConfig(configPath string) (*YAMLConfig, error) {
+	var tempFilePath string
+	var cleanup func()
+
+	// S3 support: if configPath starts with s3://, download to temp file
+	if strings.HasPrefix(configPath, "s3://") {
+		y.logger.Info("Config path is S3 URI, downloading", String("s3_uri", configPath))
+		localPath, err := y.s3Handler.DownloadS3File(configPath)
+		if err != nil {
+			y.logger.Error("Failed to download config from S3", String("s3_uri", configPath), Error("error", err))
+			return nil, err
+		}
+		tempFilePath = localPath
+		configPath = localPath
+		cleanup = func() {
+			if err := y.s3Handler.CleanupTempFile(tempFilePath); err != nil {
+				y.logger.Error("Failed to cleanup temp file", Error("error", err))
+			}
+		}
+		defer cleanup()
+		y.logger.Info("Downloaded S3 config to local file", String("local_path", localPath))
+	}
+	
 	y.logger.Debug("Reading config file", String("path", configPath))
 	data, err := y.fileReader.ReadFile(configPath)
 	if err != nil {
@@ -942,3 +966,5 @@ func (m *MySQLTableFetcher) FetchAndDisplayTableData(config Config) error {
 
 	return nil
 } 
+
+ 
