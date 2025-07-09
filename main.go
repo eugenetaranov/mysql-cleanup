@@ -24,7 +24,7 @@ func createService() *Service {
 	// Create concrete implementations
 	dbConnector := &MySQLConnector{}
 	fileReader := &OSFileReader{}
-	logger := &StdLogger{}
+	logger := NewZapLogger() // Use zap logger instead of std logger
 	configParser := NewYAMLConfigParser(fileReader, logger)
 	fakeGenerator := &GofakeitGenerator{}
 	dataCleaner := NewDataCleanupService(dbConnector, configParser, fakeGenerator, logger)

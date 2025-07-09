@@ -39,6 +39,38 @@ type FileReader interface {
 type Logger interface {
 	Printf(format string, args ...interface{})
 	Println(args ...interface{})
+	Debug(msg string, fields ...Field)
+	Info(msg string, fields ...Field)
+	Warn(msg string, fields ...Field)
+	Error(msg string, fields ...Field)
+	With(fields ...Field) Logger
+}
+
+// Field represents a key-value pair for structured logging
+type Field struct {
+	Key   string
+	Value interface{}
+}
+
+// Field constructors for convenience
+func String(key, value string) Field {
+	return Field{Key: key, Value: value}
+}
+
+func Int(key string, value int) Field {
+	return Field{Key: key, Value: value}
+}
+
+func Int64(key string, value int64) Field {
+	return Field{Key: key, Value: value}
+}
+
+func Error(key string, err error) Field {
+	return Field{Key: key, Value: err}
+}
+
+func Any(key string, value interface{}) Field {
+	return Field{Key: key, Value: value}
 }
 
 // TableDataFetcher interface for fetching table data

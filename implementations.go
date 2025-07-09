@@ -10,6 +10,8 @@ import (
 
 	"github.com/brianvoe/gofakeit/v7"
 	_ "github.com/go-sql-driver/mysql"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"gopkg.in/yaml.v3"
 )
 
@@ -130,7 +132,7 @@ func (d *DataCleanupService) CleanupData(config Config) error {
 			continue // Skip if not the target database
 		}
 
-		d.logger.Printf("Processing database: %s", dbName)
+		d.logger.Info("Processing database", String("database", dbName))
 
 		// Handle truncate tables
 		if len(dbConfig.Truncate) > 0 {
@@ -152,25 +154,27 @@ func (d *DataCleanupService) CleanupData(config Config) error {
 
 func (d *DataCleanupService) TruncateTables(db *sql.DB, tables []string) error {
 	for _, table := range tables {
-		d.logger.Printf("Truncating table: %s", table)
+		d.logger.Info("Truncating table", String("table", table))
 		query := fmt.Sprintf("TRUNCATE TABLE `%s`", table)
 		if _, err := db.Exec(query); err != nil {
+			d.logger.Error("Failed to truncate table", String("table", table), Error("error", err))
 			return fmt.Errorf("failed to truncate table %s: %w", table, err)
 		}
-		d.logger.Printf("Successfully truncated table: %s", table)
+		d.logger.Info("Successfully truncated table", String("table", table))
 	}
 	return nil
 }
 
 func (d *DataCleanupService) UpdateTables(db *sql.DB, tableConfigs map[string]TableUpdateConfig) error {
 	for tableName, tableConfig := range tableConfigs {
-		d.logger.Printf("Updating table: %s", tableName)
+		d.logger.Info("Updating table", String("table", tableName))
 		
 		if err := d.UpdateTableData(db, tableName, tableConfig); err != nil {
+			d.logger.Error("Failed to update table", String("table", tableName), Error("error", err))
 			return fmt.Errorf("failed to update table %s: %w", tableName, err)
 		}
 		
-		d.logger.Printf("Successfully updated table: %s", tableName)
+		d.logger.Info("Successfully updated table", String("table", tableName))
 	}
 	return nil
 }
@@ -194,28 +198,28 @@ func (d *DataCleanupService) UpdateTableData(db *sql.DB, tableName string, table
 	for rows.Next() {
 		var id int64
 		if err := rows.Scan(&id); err != nil {
-			d.logger.Printf("Warning: failed to scan row ID: %v", err)
+			d.logger.Warn("Failed to scan row ID", String("table", tableName), Error("error", err))
 			continue
 		}
 		rowIDs = append(rowIDs, id)
 	}
 
 	if len(rowIDs) == 0 {
-		d.logger.Printf("No rows to update in table: %s", tableName)
+		d.logger.Info("No rows to update", String("table", tableName))
 		return nil
 	}
 
-	d.logger.Printf("Updating %d rows in table: %s", len(rowIDs), tableName)
+	d.logger.Info("Updating rows", String("table", tableName), Int("row_count", len(rowIDs)))
 
 	// Update each row individually
 	for _, rowID := range rowIDs {
 		if err := d.updateSingleRow(db, tableName, rowID, tableConfig); err != nil {
-			d.logger.Printf("Warning: failed to update row %d in table %s: %v", rowID, tableName, err)
+			d.logger.Warn("Failed to update row", String("table", tableName), Int64("row_id", rowID), Error("error", err))
 			continue
 		}
 	}
 
-	d.logger.Printf("Successfully updated %d rows in table: %s", len(rowIDs), tableName)
+	d.logger.Info("Successfully updated rows", String("table", tableName), Int("row_count", len(rowIDs)))
 	return nil
 }
 
@@ -228,17 +232,17 @@ func (d *DataCleanupService) updateSingleRow(db *sql.DB, tableName string, rowID
 		// Check if column exists before trying to update it
 		exists, err := d.columnExists(db, tableName, column)
 		if err != nil {
-			d.logger.Printf("Warning: failed to check column %s in table %s: %v", column, tableName, err)
+			d.logger.Warn("Failed to check column", String("table", tableName), String("column", column), Error("error", err))
 			continue
 		}
 		if !exists {
-			d.logger.Printf("Warning: column %s does not exist in table %s, skipping", column, tableName)
+			d.logger.Warn("Column does not exist, skipping", String("table", tableName), String("column", column))
 			continue
 		}
 
 		fakeValue, err := d.fakeGenerator.GenerateFakeValue(fakerType)
 		if err != nil {
-			d.logger.Printf("Warning: failed to generate fake value for %s.%s: %v", tableName, column, err)
+			d.logger.Warn("Failed to generate fake value", String("table", tableName), String("column", column), String("faker_type", fakerType), Error("error", err))
 			continue
 		}
 		updates = append(updates, fmt.Sprintf("`%s` = ?", column))
@@ -262,7 +266,7 @@ func (d *DataCleanupService) updateSingleRow(db *sql.DB, tableName string, rowID
 
 	rowsAffected, _ := result.RowsAffected()
 	if rowsAffected == 0 {
-		d.logger.Printf("Warning: no rows affected for row ID %d in table %s", rowID, tableName)
+		d.logger.Warn("No rows affected", String("table", tableName), Int64("row_id", rowID))
 	}
 
 	return nil
@@ -346,7 +350,70 @@ func (o *OSFileReader) ReadFile(filename string) ([]byte, error) {
 	return ioutil.ReadFile(filename)
 }
 
-// StdLogger implements Logger
+// ZapLogger implements Logger using zap
+type ZapLogger struct {
+	logger *zap.Logger
+}
+
+func NewZapLogger() *ZapLogger {
+	// Create a development logger with caller info and stack traces
+	config := zap.NewDevelopmentConfig()
+	config.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
+	config.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+	config.EncoderConfig.EncodeCaller = zapcore.ShortCallerEncoder
+	
+	logger, err := config.Build()
+	if err != nil {
+		// Fallback to standard logger if zap fails
+		log.Printf("Failed to create zap logger: %v, falling back to std logger", err)
+		return &ZapLogger{logger: zap.NewNop()}
+	}
+	
+	return &ZapLogger{logger: logger}
+}
+
+func (z *ZapLogger) Printf(format string, args ...interface{}) {
+	z.logger.Sugar().Infof(format, args...)
+}
+
+func (z *ZapLogger) Println(args ...interface{}) {
+	z.logger.Sugar().Infoln(args...)
+}
+
+func (z *ZapLogger) Debug(msg string, fields ...Field) {
+	zapFields := z.convertFields(fields)
+	z.logger.Debug(msg, zapFields...)
+}
+
+func (z *ZapLogger) Info(msg string, fields ...Field) {
+	zapFields := z.convertFields(fields)
+	z.logger.Info(msg, zapFields...)
+}
+
+func (z *ZapLogger) Warn(msg string, fields ...Field) {
+	zapFields := z.convertFields(fields)
+	z.logger.Warn(msg, zapFields...)
+}
+
+func (z *ZapLogger) Error(msg string, fields ...Field) {
+	zapFields := z.convertFields(fields)
+	z.logger.Error(msg, zapFields...)
+}
+
+func (z *ZapLogger) With(fields ...Field) Logger {
+	zapFields := z.convertFields(fields)
+	return &ZapLogger{logger: z.logger.With(zapFields...)}
+}
+
+func (z *ZapLogger) convertFields(fields []Field) []zap.Field {
+	zapFields := make([]zap.Field, len(fields))
+	for i, field := range fields {
+		zapFields[i] = zap.Any(field.Key, field.Value)
+	}
+	return zapFields
+}
+
+// StdLogger implements Logger (kept for backward compatibility)
 type StdLogger struct{}
 
 func (s *StdLogger) Printf(format string, args ...interface{}) {
@@ -355,6 +422,26 @@ func (s *StdLogger) Printf(format string, args ...interface{}) {
 
 func (s *StdLogger) Println(args ...interface{}) {
 	log.Println(args...)
+}
+
+func (s *StdLogger) Debug(msg string, fields ...Field) {
+	log.Printf("[DEBUG] %s", msg)
+}
+
+func (s *StdLogger) Info(msg string, fields ...Field) {
+	log.Printf("[INFO] %s", msg)
+}
+
+func (s *StdLogger) Warn(msg string, fields ...Field) {
+	log.Printf("[WARN] %s", msg)
+}
+
+func (s *StdLogger) Error(msg string, fields ...Field) {
+	log.Printf("[ERROR] %s", msg)
+}
+
+func (s *StdLogger) With(fields ...Field) Logger {
+	return s // StdLogger doesn't support structured logging
 }
 
 // MySQLTableFetcher implements TableDataFetcher
