@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,9 +25,9 @@ type MySQLConnector struct{}
 func (m *MySQLConnector) Connect(config Config) (*sql.DB, error) {
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true", 
 		config.User, config.Password, config.Host, config.Port, config.DB)
-	
 	// Note: We can't log the full DSN as it contains the password
 	log.Printf("Connecting to MySQL database: %s@%s:%s/%s", config.User, config.Host, config.Port, config.DB)
+	log.Printf("[DEBUG] DSN: %s:****@tcp(%s:%s)/%s?parseTime=true (config.DB=%q)", config.User, config.Host, config.Port, config.DB, config.DB)
 	
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
@@ -130,10 +132,14 @@ type BatchProcessor struct {
 }
 
 // BatchJob represents a batch of rows to be updated
+// Add PKCols and PKValues for supporting composite PKs
 type BatchJob struct {
-	TableName   string
-	RowIDs      []int64
-	TableConfig TableUpdateConfig
+	DatabaseName string
+	TableName    string
+	PKCols       []string
+	PKValues     [][]interface{} // Each row's PK values
+	TableConfig  TableUpdateConfig
+	ValidColumns map[string]string // Pre-validated columns: column -> fakerType
 }
 
 // BatchResult represents the result of processing a batch
@@ -224,7 +230,7 @@ func (d *DataCleanupService) CleanupData(config Config) error {
 				// Process all tables
 				d.logger.Debug("Processing all tables mode")
 				d.logger.Debug("Processing all tables", Int("table_count", len(dbConfig.Update)))
-				if err := d.UpdateTables(db, dbConfig.Update); err != nil {
+				if err := d.UpdateTables(db, config.DB, dbConfig.Update); err != nil {
 					d.logger.Error("Failed to update tables", Error("error", err))
 					return err
 				}
@@ -238,7 +244,7 @@ func (d *DataCleanupService) CleanupData(config Config) error {
 				}
 
 				d.logger.Debug("Processing single table", String("table", config.Table))
-				if err := d.UpdateTableData(db, config.Table, tableConfig); err != nil {
+				if err := d.UpdateTableData(db, config.DB, config.Table, tableConfig); err != nil {
 					d.logger.Error("Failed to update table", String("table", config.Table), Error("error", err))
 					return err
 				}
@@ -271,11 +277,11 @@ func (d *DataCleanupService) TruncateTables(db *sql.DB, tables []string) error {
 	return nil
 }
 
-func (d *DataCleanupService) UpdateTables(db *sql.DB, tableConfigs map[string]TableUpdateConfig) error {
+func (d *DataCleanupService) UpdateTables(db *sql.DB, databaseName string, tableConfigs map[string]TableUpdateConfig) error {
 	for tableName, tableConfig := range tableConfigs {
 		d.logger.Debug("Updating table", String("table", tableName))
 		
-		if err := d.UpdateTableData(db, tableName, tableConfig); err != nil {
+		if err := d.UpdateTableData(db, databaseName, tableName, tableConfig); err != nil {
 			d.logger.Error("Failed to update table", String("table", tableName), Error("error", err))
 			return fmt.Errorf("failed to update table %s: %w", tableName, err)
 		}
@@ -285,20 +291,54 @@ func (d *DataCleanupService) UpdateTables(db *sql.DB, tableConfigs map[string]Ta
 	return nil
 }
 
-func (d *DataCleanupService) UpdateTableData(db *sql.DB, tableName string, tableConfig TableUpdateConfig) error {
+func (d *DataCleanupService) UpdateTableData(db *sql.DB, databaseName, tableName string, tableConfig TableUpdateConfig) error {
 	d.logger.Debug("Starting parallel table data update", String("table", tableName), Int("column_count", len(tableConfig.Columns)), Int("worker_count", d.batchProcessor.workerCount), Int("batch_size", d.batchProcessor.batchSize))
-	
+
 	startTime := time.Now()
+
+	// Discover primary key columns
+	pkCols, err := getPrimaryKeyColumns(db, databaseName, tableName, d.logger)
+	if err != nil {
+		return fmt.Errorf("failed to discover primary key: %w", err)
+	}
+
+	// Pre-check all columns exist before starting parallel processing
+	validColumns := make(map[string]string) // column -> fakerType
+	for column, fakerType := range tableConfig.Columns {
+		exists, err := d.columnExists(db, databaseName, tableName, column)
+		if err != nil {
+			d.logger.Warn("Failed to check column", String("table", tableName), String("column", column), Error("error", err))
+			continue
+		}
+		if !exists {
+			d.logger.Warn("Column does not exist, skipping", String("table", tableName), String("column", column))
+			continue
+		}
+		validColumns[column] = fakerType
+	}
 	
-	// First, get all row IDs that need to be updated
+	if len(validColumns) == 0 {
+		d.logger.Warn("No valid columns found for update", String("table", tableName))
+		return nil
+	}
+	
+	d.logger.Debug("Pre-validated columns", String("table", tableName), Int("valid_columns", len(validColumns)))
+
 	whereClause := ""
 	if tableConfig.ExcludeClause != "" {
 		whereClause = fmt.Sprintf("WHERE NOT (%s)", tableConfig.ExcludeClause)
 		d.logger.Debug("Using exclude clause", String("exclude_clause", tableConfig.ExcludeClause))
 	}
 
-	// Get all row IDs to update
-	selectQuery := fmt.Sprintf("SELECT id FROM `%s` %s", tableName, whereClause)
+	// Build SELECT for PK columns
+	selectCols := ""
+	for i, col := range pkCols {
+		if i > 0 {
+			selectCols += ", "
+		}
+		selectCols += fmt.Sprintf("`%s`", col)
+	}
+	selectQuery := fmt.Sprintf("SELECT %s FROM `%s` %s", selectCols, tableName, whereClause)
 	d.logger.Debug("Executing select query", String("query", selectQuery))
 	rows, err := db.Query(selectQuery)
 	if err != nil {
@@ -306,107 +346,108 @@ func (d *DataCleanupService) UpdateTableData(db *sql.DB, tableName string, table
 	}
 	defer rows.Close()
 
-	var rowIDs []int64
+	// Collect PK values for each row
+	var pkValues [][]interface{}
 	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			d.logger.Warn("Failed to scan row ID", String("table", tableName), Error("error", err))
+		vals := make([]interface{}, len(pkCols))
+		ptrs := make([]interface{}, len(pkCols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			d.logger.Warn("Failed to scan PK values", String("table", tableName), Error("error", err))
 			continue
 		}
-		rowIDs = append(rowIDs, id)
+		pkValues = append(pkValues, vals)
 	}
-
-	d.logger.Debug("Scanned row IDs", String("table", tableName), Int("row_count", len(rowIDs)))
-	if len(rowIDs) == 0 {
+	d.logger.Debug("Scanned PK values", String("table", tableName), Int("row_count", len(pkValues)))
+	if len(pkValues) == 0 {
 		d.logger.Debug("No rows to update", String("table", tableName))
 		return nil
 	}
-
-	d.logger.Debug("Starting parallel batch processing", String("table", tableName), Int("row_count", len(rowIDs)), Int("batch_size", d.batchProcessor.batchSize))
+	d.logger.Debug("Starting parallel batch processing", String("table", tableName), Int("row_count", len(pkValues)), Int("batch_size", d.batchProcessor.batchSize))
 
 	// Process rows in parallel batches
-	totalProcessed, totalErrors := d.processBatchesInParallel(db, tableName, rowIDs, tableConfig)
-	
+	totalProcessed, totalErrors := d.processBatchesInParallelPK(db, databaseName, tableName, pkCols, pkValues, tableConfig, validColumns)
 	duration := time.Since(startTime)
 	d.logger.Debug("Parallel batch processing completed", 
 		String("table", tableName), 
-		Int("total_rows", len(rowIDs)),
+		Int("total_rows", len(pkValues)),
 		Int("processed", totalProcessed),
 		Int("errors", totalErrors),
 		String("duration", duration.String()),
 		String("rows_per_second", fmt.Sprintf("%.2f", float64(totalProcessed)/duration.Seconds())))
-	
+
 	return nil
 }
 
-// processBatchesInParallel processes row batches using a worker pool
-func (d *DataCleanupService) processBatchesInParallel(db *sql.DB, tableName string, rowIDs []int64, tableConfig TableUpdateConfig) (int, int) {
-	// Create batches
-	batches := d.createBatches(rowIDs, d.batchProcessor.batchSize)
-	d.logger.Debug("Created batches", String("table", tableName), Int("batch_count", len(batches)), Int("batch_size", d.batchProcessor.batchSize))
-	
-	// Create job channel
+// processBatchesInParallelPK processes row batches using a worker pool (PK-aware)
+func (d *DataCleanupService) processBatchesInParallelPK(db *sql.DB, databaseName, tableName string, pkCols []string, pkValues [][]interface{}, tableConfig TableUpdateConfig, validColumns map[string]string) (int, int) {
+	batches := d.createBatchesPK(pkValues, d.batchProcessor.batchSize)
+	d.logger.Debug("Created PK batches", String("table", tableName), Int("batch_count", len(batches)), Int("batch_size", d.batchProcessor.batchSize))
+
 	jobChan := make(chan BatchJob, len(batches))
 	resultChan := make(chan BatchResult, len(batches))
-	
-	// Start workers
+
 	var wg sync.WaitGroup
 	for i := 0; i < d.batchProcessor.workerCount; i++ {
 		wg.Add(1)
-		go d.worker(i, db, jobChan, resultChan, &wg)
+		go d.workerPK(i, db, jobChan, resultChan, &wg)
 	}
-	
-	// Send jobs
-	go func() {
-		defer close(jobChan)
-		for _, batch := range batches {
-			jobChan <- BatchJob{
-				TableName:   tableName,
-				RowIDs:      batch,
-				TableConfig: tableConfig,
+
+			go func() {
+			defer close(jobChan)
+			for _, batch := range batches {
+				jobChan <- BatchJob{
+					DatabaseName: databaseName,
+					TableName:    tableName,
+					PKCols:       pkCols,
+					PKValues:     batch,
+					TableConfig:  tableConfig,
+					ValidColumns: validColumns,
+				}
 			}
-		}
-	}()
-	
-	// Collect results
+		}()
+
 	go func() {
 		wg.Wait()
 		close(resultChan)
 	}()
-	
-	// Process results
+
 	totalProcessed := 0
 	totalErrors := 0
 	for result := range resultChan {
 		totalProcessed += result.ProcessedCount
 		totalErrors += result.ErrorCount
-		
 		if result.ErrorCount > 0 {
-			d.logger.Warn("Batch had errors", 
-				String("table", result.TableName), 
-				Int("processed", result.ProcessedCount),
-				Int("errors", result.ErrorCount),
-				String("duration", result.Duration.String()))
+			d.logger.Warn("Batch had errors", String("table", result.TableName), Int("processed", result.ProcessedCount), Int("errors", result.ErrorCount), String("duration", result.Duration.String()))
 		} else {
-			d.logger.Debug("Batch completed successfully", 
-				String("table", result.TableName), 
-				Int("processed", result.ProcessedCount),
-				String("duration", result.Duration.String()))
+			d.logger.Debug("Batch completed successfully", String("table", result.TableName), Int("processed", result.ProcessedCount), String("duration", result.Duration.String()))
 		}
 	}
-	
 	return totalProcessed, totalErrors
 }
 
-// worker processes batch jobs from the job channel
-func (d *DataCleanupService) worker(workerID int, db *sql.DB, jobChan <-chan BatchJob, resultChan chan<- BatchResult, wg *sync.WaitGroup) {
+// createBatchesPK splits PK value slices into batches
+func (d *DataCleanupService) createBatchesPK(pkValues [][]interface{}, batchSize int) [][][]interface{} {
+	var batches [][][]interface{}
+	for i := 0; i < len(pkValues); i += batchSize {
+		end := i + batchSize
+		if end > len(pkValues) {
+			end = len(pkValues)
+		}
+		batches = append(batches, pkValues[i:end])
+	}
+	return batches
+}
+
+// workerPK processes PK-aware batch jobs
+func (d *DataCleanupService) workerPK(workerID int, db *sql.DB, jobChan <-chan BatchJob, resultChan chan<- BatchResult, wg *sync.WaitGroup) {
 	defer wg.Done()
-	
 	for job := range jobChan {
 		startTime := time.Now()
-		processed, errors := d.processBatch(db, job)
+		processed, errors := d.processBatchPK(db, job)
 		duration := time.Since(startTime)
-		
 		resultChan <- BatchResult{
 			BatchJob:       job,
 			ProcessedCount: processed,
@@ -416,95 +457,77 @@ func (d *DataCleanupService) worker(workerID int, db *sql.DB, jobChan <-chan Bat
 	}
 }
 
-// processBatch processes a single batch of rows using bulk UPDATE
-func (d *DataCleanupService) processBatch(db *sql.DB, job BatchJob) (int, int) {
-	if len(job.RowIDs) == 0 {
+
+
+// processBatchPK processes a single batch of rows using bulk UPDATE with PK(s)
+func (d *DataCleanupService) processBatchPK(db *sql.DB, job BatchJob) (int, int) {
+	if len(job.PKValues) == 0 {
 		return 0, 0
 	}
-	
-	// Generate fake values for all columns once (reuse for all rows in batch)
+
+	// Generate fake values for all pre-validated columns once (reuse for all rows in batch)
 	columnUpdates := make(map[string]interface{})
-	for column, fakerType := range job.TableConfig.Columns {
-		// Check if column exists
-		exists, err := d.columnExists(db, job.TableName, column)
-		if err != nil {
-			d.logger.Warn("Failed to check column", String("table", job.TableName), String("column", column), Error("error", err))
-			continue
-		}
-		if !exists {
-			d.logger.Warn("Column does not exist, skipping", String("table", job.TableName), String("column", column))
-			continue
-		}
-		
-		fakeValue, err := d.schemaAwareGenerator.GenerateFakeValue(fakerType, job.TableName, column, db)
+	for column, fakerType := range job.ValidColumns {
+		fakeValue, err := d.schemaAwareGenerator.GenerateFakeValue(fakerType, job.DatabaseName, job.TableName, column, db)
 		if err != nil {
 			d.logger.Warn("Failed to generate fake value", String("table", job.TableName), String("column", column), String("faker_type", fakerType), Error("error", err))
 			continue
 		}
 		columnUpdates[column] = fakeValue
 	}
-	
 	if len(columnUpdates) == 0 {
 		return 0, 0
 	}
-	
-	// Build bulk UPDATE query
-	updates := make([]string, 0, len(columnUpdates))
-	for column := range columnUpdates {
-		updates = append(updates, fmt.Sprintf("`%s` = ?", column))
-	}
-	
-	// Create CASE statements for each column to handle different values per row
-	// This allows us to update multiple rows with different values in a single query
-	// Use DATABASE() to ensure we're updating the correct database
-	query := fmt.Sprintf("UPDATE `%s` SET %s WHERE id IN (%s)", 
-		job.TableName, 
-		strings.Join(updates, ", "),
-		strings.Repeat("?,", len(job.RowIDs)-1)+"?")
-	
-	// Prepare arguments: column values first, then row IDs
-	args := make([]interface{}, 0, len(columnUpdates)+len(job.RowIDs))
-	for _, value := range columnUpdates {
-		args = append(args, value)
-	}
-	for _, rowID := range job.RowIDs {
-		args = append(args, rowID)
-	}
-	
-	// Execute bulk update
-	result, err := db.Exec(query, args...)
-	if err != nil {
-		d.logger.Error("Failed to execute bulk update", String("table", job.TableName), Int("batch_size", len(job.RowIDs)), Error("error", err))
-		return 0, len(job.RowIDs)
-	}
-	
-	rowsAffected, _ := result.RowsAffected()
-	return int(rowsAffected), 0
-}
 
-// createBatches splits row IDs into batches of specified size
-func (d *DataCleanupService) createBatches(rowIDs []int64, batchSize int) [][]int64 {
-	var batches [][]int64
-	for i := 0; i < len(rowIDs); i += batchSize {
-		end := i + batchSize
-		if end > len(rowIDs) {
-			end = len(rowIDs)
+	// Build UPDATE query for each row in batch
+	processed := 0
+	errors := 0
+	for _, pkVals := range job.PKValues {
+		setParts := make([]string, 0, len(columnUpdates))
+		args := make([]interface{}, 0, len(columnUpdates)+len(pkVals))
+		for col, val := range columnUpdates {
+			setParts = append(setParts, fmt.Sprintf("`%s` = ?", col))
+			args = append(args, val)
 		}
-		batches = append(batches, rowIDs[i:end])
+		// WHERE clause for PK(s)
+		whereParts := make([]string, len(job.PKCols))
+		for i, pkCol := range job.PKCols {
+			whereParts[i] = fmt.Sprintf("`%s` = ?", pkCol)
+			args = append(args, pkVals[i])
+		}
+		query := fmt.Sprintf("UPDATE `%s`.`%s` SET %s WHERE %s", job.DatabaseName, job.TableName, strings.Join(setParts, ", "), strings.Join(whereParts, " AND "))
+		_, err := db.Exec(query, args...)
+		if err != nil {
+			d.logger.Error("Failed to update row", String("table", job.TableName), Error("error", err))
+			errors++
+			continue
+		}
+		processed++
 	}
-	return batches
+	return processed, errors
 }
 
-func (d *DataCleanupService) updateSingleRow(db *sql.DB, tableName string, rowID int64, tableConfig TableUpdateConfig) error {
+
+
+func (d *DataCleanupService) updateSingleRow(db *sql.DB, databaseName, tableName string, rowID int64, tableConfig TableUpdateConfig) error {
 	d.logger.Debug("Updating single row", String("table", tableName), Int64("row_id", rowID), Int("column_count", len(tableConfig.Columns)))
-	
+
+	// Discover primary key columns
+	pkCols, err := getPrimaryKeyColumns(db, databaseName, tableName, d.logger)
+	if err != nil {
+		return fmt.Errorf("failed to discover primary key: %w", err)
+	}
+	if len(pkCols) != 1 {
+		return fmt.Errorf("single-row update only supports single-column PKs (got %d)", len(pkCols))
+	}
+
 	// Build the UPDATE query for this specific row
 	updates := make([]string, 0)
 	args := make([]interface{}, 0)
 
 	for column, fakerType := range tableConfig.Columns {
 		// Check if column exists before trying to update it
-		exists, err := d.columnExists(db, tableName, column)
+		exists, err := d.columnExists(db, databaseName, tableName, column)
 		if err != nil {
 			d.logger.Warn("Failed to check column", String("table", tableName), String("column", column), Error("error", err))
 			continue
@@ -514,7 +537,7 @@ func (d *DataCleanupService) updateSingleRow(db *sql.DB, tableName string, rowID
 			continue
 		}
 
-		fakeValue, err := d.schemaAwareGenerator.GenerateFakeValue(fakerType, tableName, column, db)
+		fakeValue, err := d.schemaAwareGenerator.GenerateFakeValue(fakerType, databaseName, tableName, column, db)
 		if err != nil {
 			d.logger.Warn("Failed to generate fake value", String("table", tableName), String("column", column), String("faker_type", fakerType), Error("error", err))
 			continue
@@ -527,13 +550,13 @@ func (d *DataCleanupService) updateSingleRow(db *sql.DB, tableName string, rowID
 		return nil
 	}
 
-	// Add the row ID to the args
+	// Add the PK value to the args
 	args = append(args, rowID)
 
 	// Execute the UPDATE query for this specific row
-	query := fmt.Sprintf("UPDATE `%s` SET %s WHERE id = ?", tableName, strings.Join(updates, ", "))
+	query := fmt.Sprintf("UPDATE `%s`.`%s` SET %s WHERE `%s` = ?", databaseName, tableName, strings.Join(updates, ", "), pkCols[0])
 	d.logger.Debug("Executing update query", String("table", tableName), Int64("row_id", rowID), String("query", query))
-	
+
 	result, err := db.Exec(query, args...)
 	if err != nil {
 		return fmt.Errorf("failed to execute UPDATE query for row %d: %w", rowID, err)
@@ -547,23 +570,57 @@ func (d *DataCleanupService) updateSingleRow(db *sql.DB, tableName string, rowID
 	return nil
 }
 
-func (d *DataCleanupService) columnExists(db *sql.DB, tableName, columnName string) (bool, error) {
-	// Use INFORMATION_SCHEMA to check column existence with explicit database name
-	query := fmt.Sprintf(`
+func (d *DataCleanupService) columnExists(db *sql.DB, databaseName, tableName, columnName string) (bool, error) {
+	// Use INFORMATION_SCHEMA to check column existence with parameterized query
+	query := `
 		SELECT COUNT(*) 
 		FROM INFORMATION_SCHEMA.COLUMNS 
-		WHERE TABLE_SCHEMA = DATABASE() 
-		AND TABLE_NAME = '%s' 
-		AND COLUMN_NAME = '%s'
-	`, tableName, columnName)
+		WHERE TABLE_SCHEMA = ? 
+		AND TABLE_NAME = ? 
+		AND COLUMN_NAME = ?
+	`
 	
 	var count int
-	err := db.QueryRow(query).Scan(&count)
+	err := db.QueryRow(query, databaseName, tableName, columnName).Scan(&count)
 	if err != nil {
 		return false, fmt.Errorf("failed to check column %s in table %s: %w", columnName, tableName, err)
 	}
 	
 	return count > 0, nil
+}
+
+// getPrimaryKeyColumns returns the primary key column(s) for a table
+func getPrimaryKeyColumns(db *sql.DB, databaseName, tableName string, logger Logger) ([]string, error) {
+	query := `
+		SELECT COLUMN_NAME
+		FROM INFORMATION_SCHEMA.COLUMNS
+		WHERE TABLE_SCHEMA = ?
+		  AND TABLE_NAME = ?
+		  AND COLUMN_KEY = 'PRI'
+		ORDER BY ORDINAL_POSITION
+	`
+	rows, err := db.Query(query, databaseName, tableName)
+	if err != nil {
+		logger.Error("Failed to query primary key columns", Error("error", err), String("table", tableName))
+		return nil, err
+	}
+	defer rows.Close()
+
+	var cols []string
+	for rows.Next() {
+		var col string
+		if err := rows.Scan(&col); err != nil {
+			logger.Error("Failed to scan PK column", Error("error", err), String("table", tableName))
+			return nil, err
+		}
+		cols = append(cols, col)
+	}
+	if len(cols) == 0 {
+		logger.Error("No primary key found for table", String("table", tableName))
+		return nil, fmt.Errorf("no primary key found for table %s", tableName)
+	}
+	logger.Info("Discovered primary key columns", String("table", tableName), String("pk_columns", fmt.Sprintf("%v", cols)))
+	return cols, nil
 }
 
 // GofakeitGenerator implements FakeDataGenerator
@@ -580,7 +637,7 @@ func NewSchemaAwareGofakeitGenerator(logger Logger) *SchemaAwareGofakeitGenerato
 	}
 }
 
-func (g *SchemaAwareGofakeitGenerator) GetColumnInfo(tableName, columnName string, db *sql.DB) (*ColumnInfo, error) {
+func (g *SchemaAwareGofakeitGenerator) GetColumnInfo(databaseName, tableName, columnName string, db *sql.DB) (*ColumnInfo, error) {
 	query := `
 		SELECT 
 			DATA_TYPE,
@@ -588,7 +645,7 @@ func (g *SchemaAwareGofakeitGenerator) GetColumnInfo(tableName, columnName strin
 			IS_NULLABLE,
 			COLUMN_DEFAULT
 		FROM INFORMATION_SCHEMA.COLUMNS 
-		WHERE TABLE_SCHEMA = DATABASE() 
+		WHERE TABLE_SCHEMA = ? 
 		AND TABLE_NAME = ? 
 		AND COLUMN_NAME = ?
 	`
@@ -597,7 +654,7 @@ func (g *SchemaAwareGofakeitGenerator) GetColumnInfo(tableName, columnName strin
 	var maxLength sql.NullInt64
 	var defaultValue sql.NullString
 	
-	err := db.QueryRow(query, tableName, columnName).Scan(&dataType, &maxLength, &isNullable, &defaultValue)
+	err := db.QueryRow(query, databaseName, tableName, columnName).Scan(&dataType, &maxLength, &isNullable, &defaultValue)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get column info for %s.%s: %w", tableName, columnName, err)
 	}
@@ -626,14 +683,14 @@ func (g *SchemaAwareGofakeitGenerator) GetColumnInfo(tableName, columnName strin
 	return columnInfo, nil
 }
 
-func (g *SchemaAwareGofakeitGenerator) GenerateFakeValue(fakerType string, tableName, columnName string, db *sql.DB) (interface{}, error) {
+func (g *SchemaAwareGofakeitGenerator) GenerateFakeValue(fakerType string, databaseName, tableName, columnName string, db *sql.DB) (interface{}, error) {
 	g.logger.Debug("Generating schema-aware fake value", 
 		String("faker_type", fakerType), 
 		String("table", tableName), 
 		String("column", columnName))
 	
 	// Get column information
-	columnInfo, err := g.GetColumnInfo(tableName, columnName, db)
+	columnInfo, err := g.GetColumnInfo(databaseName, tableName, columnName, db)
 	if err != nil {
 		g.logger.Warn("Failed to get column info, falling back to basic generation", 
 			String("table", tableName), 
@@ -704,14 +761,16 @@ func (g *SchemaAwareGofakeitGenerator) generateBasicFakeValue(fakerType string) 
 		return gofakeit.UUID(), nil
 	case "random_text":
 		return gofakeit.Sentence(10), nil
+	case "random_word":
+		return gofakeit.Word(), nil
 	case "random_email_subject":
 		return gofakeit.Sentence(6), nil
 	case "random_file_name":
 		return gofakeit.Word() + gofakeit.FileExtension(), nil
 	case "random_number_txt":
-		return fmt.Sprintf("%d", gofakeit.Number(1000, 9999)), nil
+		return fmt.Sprintf("%d", gofakeit.Number(1, 9999)), nil
 	case "random_room_number_txt":
-		return fmt.Sprintf("%d", gofakeit.Number(100, 999)), nil
+		return fmt.Sprintf("%d", gofakeit.Number(1, 255)), nil
 	default:
 		if fakerType == "" {
 			return nil, nil // Empty string means don't update this column
@@ -764,6 +823,8 @@ func (g *GofakeitGenerator) GenerateFakeValue(fakerType string) (interface{}, er
 		return gofakeit.UUID(), nil
 	case "random_text":
 		return gofakeit.Sentence(10), nil
+	case "random_word":
+		return gofakeit.Word(), nil
 	case "random_email_subject":
 		return gofakeit.Sentence(6), nil
 	case "random_file_name":
@@ -809,7 +870,27 @@ func NewZapLogger(debug bool) *ZapLogger {
 	
 	config.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
 	config.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
-	config.EncoderConfig.EncodeCaller = zapcore.ShortCallerEncoder
+	
+	// Custom caller encoder to show relative paths from repo root
+	config.EncoderConfig.EncodeCaller = func(caller zapcore.EntryCaller, enc zapcore.PrimitiveArrayEncoder) {
+		// Get the current working directory to make paths relative
+		wd, err := os.Getwd()
+		if err != nil {
+			// Fallback to short caller if we can't get working directory
+			enc.AppendString(caller.TrimmedPath())
+			return
+		}
+		
+		// Make the path relative to working directory
+		relPath := strings.TrimPrefix(caller.FullPath(), wd+"/")
+		if relPath == caller.FullPath() {
+			// If trimming didn't work, fall back to just the filename
+			relPath = filepath.Base(caller.FullPath())
+		}
+		
+		// Format as "filename:line"
+		enc.AppendString(fmt.Sprintf("%s:%d", relPath, caller.Line))
+	}
 	
 	logger, err := config.Build()
 	if err != nil {

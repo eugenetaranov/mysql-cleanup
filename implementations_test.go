@@ -57,11 +57,17 @@ func TestFakerGeneration(t *testing.T) {
 	}
 }
 
+// MockS3Handler is a no-op S3Handler for tests
+type MockS3Handler struct{}
+func (m *MockS3Handler) DownloadS3File(s3URI string) (string, error) { return "", nil }
+func (m *MockS3Handler) CleanupTempFile(filePath string) error { return nil }
+
 // TestYAMLParsing tests basic YAML configuration parsing
 func TestYAMLParsing(t *testing.T) {
 	fileReader := &OSFileReader{}
 	logger := &StdLogger{}
-	parser := NewYAMLConfigParser(fileReader, logger)
+	s3Handler := &MockS3Handler{}
+	parser := NewYAMLConfigParser(fileReader, s3Handler, logger)
 	
 	// Test parsing a valid config file
 	config, err := parser.ParseConfig("tests/config.yaml")

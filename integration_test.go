@@ -602,11 +602,11 @@ func testTableChanges(t *testing.T, db *sql.DB, table, column string) {
 
 	// Compare
 	changesFound := false
-	for id, originalValue := range originalData {
-		if changedValue, exists := changedData[id]; exists {
+	for pk, originalValue := range originalData {
+		if changedValue, exists := changedData[pk]; exists {
 			if originalValue != changedValue {
 				changesFound = true
-				t.Logf("%s.%s changed for id %d: %s -> %s", table, column, id, originalValue, changedValue)
+				t.Logf("%s.%s changed for pk %s: %s -> %s", table, column, pk, originalValue, changedValue)
 			}
 		}
 	}
@@ -616,22 +616,77 @@ func testTableChanges(t *testing.T, db *sql.DB, table, column string) {
 	}
 }
 
-func getColumnData(db *sql.DB, database, table, column string) (map[int]string, error) {
-	data := make(map[int]string)
-	query := fmt.Sprintf("SELECT id, %s FROM %s.%s WHERE %s IS NOT NULL", column, database, table, column)
+// getPrimaryKeyColumnsTest returns the primary key column(s) for a table (for test helpers)
+func getPrimaryKeyColumnsTest(db *sql.DB, database, table string) ([]string, error) {
+	query := `
+		SELECT COLUMN_NAME
+		FROM INFORMATION_SCHEMA.COLUMNS
+		WHERE TABLE_SCHEMA = ?
+		  AND TABLE_NAME = ?
+		  AND COLUMN_KEY = 'PRI'
+		ORDER BY ORDINAL_POSITION
+	`
+	rows, err := db.Query(query, database, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var cols []string
+	for rows.Next() {
+		var col string
+		if err := rows.Scan(&col); err != nil {
+			return nil, err
+		}
+		cols = append(cols, col)
+	}
+	if len(cols) == 0 {
+		return nil, fmt.Errorf("no primary key found for table %s", table)
+	}
+	return cols, nil
+}
+
+// getColumnData returns a map of PK (as string) to column value
+func getColumnData(db *sql.DB, database, table, column string) (map[string]string, error) {
+	pkCols, err := getPrimaryKeyColumnsTest(db, database, table)
+	if err != nil {
+		return nil, err
+	}
+	// Build SELECT
+	selectCols := ""
+	for i, col := range pkCols {
+		if i > 0 {
+			selectCols += ", "
+		}
+		selectCols += fmt.Sprintf("`%s`", col)
+	}
+	query := fmt.Sprintf("SELECT %s, %s FROM %s.%s WHERE %s IS NOT NULL", selectCols, column, database, table, column)
 	rows, err := db.Query(query)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
+	data := make(map[string]string)
 	for rows.Next() {
-		var id int
+		pkVals := make([]interface{}, len(pkCols))
+		pkPtrs := make([]interface{}, len(pkCols))
+		for i := range pkVals {
+			pkPtrs[i] = &pkVals[i]
+		}
 		var value string
-		if err := rows.Scan(&id, &value); err != nil {
+		scanArgs := append(pkPtrs, &value)
+		if err := rows.Scan(scanArgs...); err != nil {
 			return nil, err
 		}
-		data[id] = value
+		// Build key as string (join PKs with |)
+		pkKey := ""
+		for i, v := range pkVals {
+			if i > 0 {
+				pkKey += "|"
+			}
+			pkKey += fmt.Sprintf("%v", v)
+		}
+		data[pkKey] = value
 	}
 	return data, nil
 }
@@ -1077,4 +1132,281 @@ func TestEdgeCaseBatchSizeOne(t *testing.T) {
 	if rowCount != 5 {
 		t.Errorf("Expected 5 rows, got %d", rowCount)
 	}
+} 
+
+// TestNonIdPrimaryKey verifies cleanup works with tables that have non-id primary keys
+func TestNonIdPrimaryKey(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping non-id primary key test in short mode")
+	}
+
+	container, db, cleanup := setupTestMySQLContainer(t)
+	defer cleanup()
+	defer container.Terminate(context.Background())
+
+	// Create test table with user_id as primary key (not 'id')
+	tableName := "users_with_custom_pk"
+	_, err := db.Exec(`CREATE TABLE acme_corp.` + tableName + ` (
+		user_id INT PRIMARY KEY AUTO_INCREMENT,
+		username VARCHAR(100),
+		email VARCHAR(255),
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	)`)
+	if err != nil {
+		t.Fatalf("Failed to create test table: %v", err)
+	}
+
+	// Insert test data
+	testData := []struct {
+		username string
+		email    string
+	}{
+		{"john_doe", "john@example.com"},
+		{"jane_smith", "jane@example.com"},
+		{"bob_wilson", "bob@example.com"},
+		{"alice_brown", "alice@example.com"},
+		{"charlie_davis", "charlie@example.com"},
+	}
+
+	for _, data := range testData {
+		_, err := db.Exec(`INSERT INTO acme_corp.`+tableName+` (username, email) VALUES (?, ?)`, data.username, data.email)
+		if err != nil {
+			t.Fatalf("Failed to insert test data: %v", err)
+		}
+	}
+
+	// Verify initial data
+	initialEmails, err := getColumnData(db, "acme_corp", tableName, "email")
+	if err != nil {
+		t.Fatalf("Failed to get initial email data: %v", err)
+	}
+	t.Logf("Initial emails: %v", initialEmails)
+
+	// Create custom config parser for this test
+	customConfigParser := &CustomTestConfigParser{
+		tableName: tableName,
+		columns: map[string]string{
+			"username": "random_username",
+			"email":    "random_email",
+		},
+	}
+
+	// Create service and run cleanup
+	testConnector := &TestContainerConnector{db: db}
+	logger := NewZapLogger(true)
+	schemaAwareGenerator := NewSchemaAwareGofakeitGenerator(logger)
+	service := &Service{
+		dataCleaner: NewDataCleanupService(
+			testConnector,
+			customConfigParser,
+			&GofakeitGenerator{},
+			schemaAwareGenerator,
+			logger,
+			2, 3, // 2 workers, batch size 3
+		),
+	}
+
+	config := Config{
+		Host:      "localhost",
+		Port:      "3306",
+		User:      "root",
+		Password:  "root",
+		DB:        "acme_corp",
+		Config:    "tests/config.yaml",
+		Table:     tableName,
+		Workers:   2,
+		BatchSize: 3,
+	}
+
+	// Run cleanup
+	if err := service.dataCleaner.CleanupData(config); err != nil {
+		t.Fatalf("Cleanup failed: %v", err)
+	}
+
+	// Verify data was updated
+	finalEmails, err := getColumnData(db, "acme_corp", tableName, "email")
+	if err != nil {
+		t.Fatalf("Failed to get final email data: %v", err)
+	}
+	t.Logf("Final emails: %v", finalEmails)
+
+	// Check that data was actually changed
+	changedCount := 0
+	for pk, finalEmail := range finalEmails {
+		if initialEmail, exists := initialEmails[pk]; exists {
+			if initialEmail != finalEmail {
+				changedCount++
+			}
+		}
+	}
+
+	if changedCount == 0 {
+		t.Error("No data was changed during cleanup")
+	} else {
+		t.Logf("Successfully updated %d rows", changedCount)
+	}
+
+	// Verify row count is the same
+	rowCount, err := getRowCount(db, "acme_corp", tableName)
+	if err != nil {
+		t.Fatalf("Failed to get row count: %v", err)
+	}
+	if rowCount != 5 {
+		t.Errorf("Expected 5 rows, got %d", rowCount)
+	}
+
+	// Verify usernames were also updated
+	finalUsernames, err := getColumnData(db, "acme_corp", tableName, "username")
+	if err != nil {
+		t.Fatalf("Failed to get final username data: %v", err)
+	}
+
+	// Check that usernames are fake data (should not contain original values)
+	originalUsernames := []string{"john_doe", "jane_smith", "bob_wilson", "alice_brown", "charlie_davis"}
+	for _, originalUsername := range originalUsernames {
+		for _, finalUsername := range finalUsernames {
+			if finalUsername == originalUsername {
+				t.Errorf("Found original username '%s' in final data, should have been replaced with fake data", originalUsername)
+			}
+		}
+	}
+
+	t.Log("Successfully verified cleanup with non-id primary key")
+} 
+
+// TestCompositePrimaryKey verifies cleanup works with tables that have composite primary keys
+func TestCompositePrimaryKey(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping composite primary key test in short mode")
+	}
+
+	container, db, cleanup := setupTestMySQLContainer(t)
+	defer cleanup()
+	defer container.Terminate(context.Background())
+
+	// Create test table with composite primary key (user_id + role_id)
+	tableName := "user_roles_composite_pk"
+	_, err := db.Exec(`CREATE TABLE acme_corp.` + tableName + ` (
+		user_id INT,
+		role_id INT,
+		permission_level VARCHAR(50),
+		assigned_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (user_id, role_id)
+	)`)
+	if err != nil {
+		t.Fatalf("Failed to create test table: %v", err)
+	}
+
+	// Insert test data
+	testData := []struct {
+		userID          int
+		roleID          int
+		permissionLevel string
+	}{
+		{1, 1, "admin"},
+		{1, 2, "user"},
+		{2, 1, "moderator"},
+		{2, 3, "guest"},
+		{3, 1, "admin"},
+		{3, 2, "user"},
+	}
+
+	for _, data := range testData {
+		_, err := db.Exec(`INSERT INTO acme_corp.`+tableName+` (user_id, role_id, permission_level) VALUES (?, ?, ?)`, 
+			data.userID, data.roleID, data.permissionLevel)
+		if err != nil {
+			t.Fatalf("Failed to insert test data: %v", err)
+		}
+	}
+
+	// Verify initial data
+	initialPermissions, err := getColumnData(db, "acme_corp", tableName, "permission_level")
+	if err != nil {
+		t.Fatalf("Failed to get initial permission data: %v", err)
+	}
+	t.Logf("Initial permissions: %v", initialPermissions)
+
+	// Create custom config parser for this test
+	customConfigParser := &CustomTestConfigParser{
+		tableName: tableName,
+		columns: map[string]string{
+			"permission_level": "random_word",
+		},
+	}
+
+	// Create service and run cleanup
+	testConnector := &TestContainerConnector{db: db}
+	logger := NewZapLogger(true)
+	schemaAwareGenerator := NewSchemaAwareGofakeitGenerator(logger)
+	service := &Service{
+		dataCleaner: NewDataCleanupService(
+			testConnector,
+			customConfigParser,
+			&GofakeitGenerator{},
+			schemaAwareGenerator,
+			logger,
+			2, 2, // 2 workers, batch size 2
+		),
+	}
+
+	config := Config{
+		Host:      "localhost",
+		Port:      "3306",
+		User:      "root",
+		Password:  "root",
+		DB:        "acme_corp",
+		Config:    "tests/config.yaml",
+		Table:     tableName,
+		Workers:   2,
+		BatchSize: 2,
+	}
+
+	// Run cleanup
+	if err := service.dataCleaner.CleanupData(config); err != nil {
+		t.Fatalf("Cleanup failed: %v", err)
+	}
+
+	// Verify data was updated
+	finalPermissions, err := getColumnData(db, "acme_corp", tableName, "permission_level")
+	if err != nil {
+		t.Fatalf("Failed to get final permission data: %v", err)
+	}
+	t.Logf("Final permissions: %v", finalPermissions)
+
+	// Check that data was actually changed
+	changedCount := 0
+	for pk, finalPermission := range finalPermissions {
+		if initialPermission, exists := initialPermissions[pk]; exists {
+			if initialPermission != finalPermission {
+				changedCount++
+			}
+		}
+	}
+
+	if changedCount == 0 {
+		t.Error("No data was changed during cleanup")
+	} else {
+		t.Logf("Successfully updated %d rows", changedCount)
+	}
+
+	// Verify row count is the same
+	rowCount, err := getRowCount(db, "acme_corp", tableName)
+	if err != nil {
+		t.Fatalf("Failed to get row count: %v", err)
+	}
+	if rowCount != 6 {
+		t.Errorf("Expected 6 rows, got %d", rowCount)
+	}
+
+	// Verify original permission levels were replaced
+	originalPermissions := []string{"admin", "user", "moderator", "guest"}
+	for _, originalPermission := range originalPermissions {
+		for _, finalPermission := range finalPermissions {
+			if finalPermission == originalPermission {
+				t.Errorf("Found original permission '%s' in final data, should have been replaced with fake data", originalPermission)
+			}
+		}
+	}
+
+	t.Log("Successfully verified cleanup with composite primary key")
 } 

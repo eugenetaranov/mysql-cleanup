@@ -21,8 +21,8 @@ type ConfigParser interface {
 type DataCleaner interface {
 	CleanupData(config Config) error
 	TruncateTables(db *sql.DB, tables []string) error
-	UpdateTables(db *sql.DB, tableConfigs map[string]TableUpdateConfig) error
-	UpdateTableData(db *sql.DB, tableName string, tableConfig TableUpdateConfig) error
+	UpdateTables(db *sql.DB, databaseName string, tableConfigs map[string]TableUpdateConfig) error
+	UpdateTableData(db *sql.DB, databaseName, tableName string, tableConfig TableUpdateConfig) error
 }
 
 // FakeDataGenerator interface for generating fake data
@@ -32,8 +32,8 @@ type FakeDataGenerator interface {
 
 // SchemaAwareFakeDataGenerator interface for generating fake data with schema awareness
 type SchemaAwareFakeDataGenerator interface {
-	GenerateFakeValue(fakerType string, tableName, columnName string, db *sql.DB) (interface{}, error)
-	GetColumnInfo(tableName, columnName string, db *sql.DB) (*ColumnInfo, error)
+	GenerateFakeValue(fakerType string, databaseName, tableName, columnName string, db *sql.DB) (interface{}, error)
+	GetColumnInfo(databaseName, tableName, columnName string, db *sql.DB) (*ColumnInfo, error)
 }
 
 // ColumnInfo represents database column metadata
