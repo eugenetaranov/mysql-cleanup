@@ -16,6 +16,7 @@ bin/
 
 # Output of the go coverage tool
 *.out
+coverage.html
 
 # Go workspace file
 go.work
@@ -35,3 +36,5 @@ go.work
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+**/.task/

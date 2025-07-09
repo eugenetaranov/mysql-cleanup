@@ -19,6 +19,29 @@ type Config struct {
 	Table    string
 }
 
+// createService creates and wires up all dependencies
+func createService() *Service {
+	// Create concrete implementations
+	dbConnector := &MySQLConnector{}
+	fileReader := &OSFileReader{}
+	logger := &StdLogger{}
+	configParser := NewYAMLConfigParser(fileReader, logger)
+	fakeGenerator := &GofakeitGenerator{}
+	dataCleaner := NewDataCleanupService(dbConnector, configParser, fakeGenerator, logger)
+	tableFetcher := NewMySQLTableFetcher(dbConnector, logger)
+
+	// Create and return the service
+	return &Service{
+		dbConnector:   dbConnector,
+		configParser:  configParser,
+		dataCleaner:   dataCleaner,
+		fakeGenerator: fakeGenerator,
+		fileReader:    fileReader,
+		logger:        logger,
+		tableFetcher:  tableFetcher,
+	}
+}
+
 func main() {
 	// Load .env file if it exists
 	if err := godotenv.Load(); err != nil {
@@ -40,6 +63,9 @@ func main() {
 	// Parse flags
 	flag.Parse()
 
+	// Create service with all dependencies
+	service := createService()
+
 	// Output the provided arguments
 	fmt.Println("MySQL Cleanup CLI")
 	fmt.Println("==================")
@@ -55,14 +81,14 @@ func main() {
 	if config.Config != "" {
 		fmt.Println("\nYAML Configuration:")
 		fmt.Println("===================")
-		if err := parseAndDisplayConfig(config.Config); err != nil {
+		if err := service.configParser.ParseAndDisplayConfig(config.Config); err != nil {
 			log.Printf("Error parsing config file: %v\n", err)
 		}
 
 		// Perform the actual data cleanup
 		fmt.Println("\nPerforming Data Cleanup:")
 		fmt.Println("========================")
-		if err := CleanupData(config); err != nil {
+		if err := service.dataCleaner.CleanupData(config); err != nil {
 			log.Printf("Error during data cleanup: %v\n", err)
 		} else {
 			fmt.Println("Data cleanup completed successfully!")
@@ -73,7 +99,7 @@ func main() {
 	if config.DB != "" && config.Table != "" {
 		fmt.Println("\nTable Data:")
 		fmt.Println("===========")
-		if err := fetchAndDisplayTableData(config); err != nil {
+		if err := service.tableFetcher.FetchAndDisplayTableData(config); err != nil {
 			log.Printf("Error fetching table data: %v\n", err)
 		}
 	}

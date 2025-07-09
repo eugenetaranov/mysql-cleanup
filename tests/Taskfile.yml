@@ -67,10 +67,54 @@ tasks:
       - docker-compose down -v
       - docker-compose rm -f
 
-  test:
-    desc: Build, reset database, and test the application
+  # Test Tasks
+  test-unit:
+    desc: Run unit tests
+    cmds:
+      - cd .. && go test -v
+    sources:
+      - ../*_test.go
+      - ../*.go
+    generates:
+      - ../mysql_cleanup.test
+
+  test-integration:
+    desc: Run integration tests with testcontainers
+    cmds:
+      - cd .. && go test -v -tags=integration
+    env:
+      TESTCONTAINERS_RYUK_DISABLED: "true"
+
+  test-coverage:
+    desc: Run unit tests with coverage report
+    cmds:
+      - cd .. && go test -v -coverprofile=coverage.out
+      - cd .. && go tool cover -html=coverage.out -o coverage.html
+    sources:
+      - ../*_test.go
+      - ../*.go
+    generates:
+      - ../coverage.out
+      - ../coverage.html
+
+  test-short:
+    desc: Run only short unit tests (skip integration tests)
+    cmds:
+      - cd .. && go test -v -short
+    sources:
+      - ../*_test.go
+      - ../*.go
+
+  test-all:
+    desc: Run both unit tests and integration tests
+    cmds:
+      - task: test-unit
+      - task: test-integration
+
+  test-debug:
+    desc: Build, reset database, and test the application manually
     cmds:
       - task: build
       - task: reset
-      - sleep 5
+      - sleep 10
       - ../bin/mysql_cleanup -config config.yaml -host localhost -port 3306 -user test_user -password test_password -db acme_corp -table account_user
