@@ -206,12 +206,15 @@ func TestParallelWorkers(t *testing.T) {
 	}
 	
 	// Create service with the test connector and custom config
+	logger := NewZapLogger(true)
+	schemaAwareGenerator := NewSchemaAwareGofakeitGenerator(logger)
 	service := &Service{
 		dataCleaner: NewDataCleanupService(
 			testConnector,
 			customConfigParser,
 			&GofakeitGenerator{},
-			NewZapLogger(true),
+			schemaAwareGenerator,
+			logger,
 			4, 5,
 		),
 	}
@@ -297,12 +300,15 @@ func TestLargeBatches(t *testing.T) {
 	}
 	
 	// Create service with the test connector and custom config
+	logger := NewZapLogger(true)
+	schemaAwareGenerator := NewSchemaAwareGofakeitGenerator(logger)
 	service := &Service{
 		dataCleaner: NewDataCleanupService(
 			testConnector,
 			customConfigParser,
 			&GofakeitGenerator{},
-			NewZapLogger(true),
+			schemaAwareGenerator,
+			logger,
 			2, 50,
 		),
 	}
@@ -372,12 +378,15 @@ func TestPerformanceComparison(t *testing.T) {
 	}
 	
 	// Create service with the test connector and custom config
+	logger1 := NewZapLogger(false)
+	schemaAwareGenerator1 := NewSchemaAwareGofakeitGenerator(logger1)
 	service1 := &Service{
 		dataCleaner: NewDataCleanupService(
 			testConnector1,
 			customConfigParser1,
 			&GofakeitGenerator{},
-			NewZapLogger(false),
+			schemaAwareGenerator1,
+			logger1,
 			1, 1,
 		),
 	}
@@ -422,12 +431,15 @@ func TestPerformanceComparison(t *testing.T) {
 	}
 	
 	// Create service with the test connector and custom config
+	logger2 := NewZapLogger(false)
+	schemaAwareGenerator2 := NewSchemaAwareGofakeitGenerator(logger2)
 	service2 := &Service{
 		dataCleaner: NewDataCleanupService(
 			testConnector2,
 			customConfigParser2,
 			&GofakeitGenerator{},
-			NewZapLogger(false),
+			schemaAwareGenerator2,
+			logger2,
 			4, 20,
 		),
 	}
@@ -495,12 +507,15 @@ func TestErrorHandlingInParallel(t *testing.T) {
 	}
 	
 	// Create service with the test connector and custom config
+	logger := NewZapLogger(true)
+	schemaAwareGenerator := NewSchemaAwareGofakeitGenerator(logger)
 	service := &Service{
 		dataCleaner: NewDataCleanupService(
 			testConnector,
 			customConfigParser,
 			&GofakeitGenerator{},
-			NewZapLogger(true),
+			schemaAwareGenerator,
+			logger,
 			3, 10,
 		),
 	}
@@ -872,4 +887,194 @@ func getRowCount(db *sql.DB, database, table string) (int, error) {
 	var count int
 	err := db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s.%s", database, table)).Scan(&count)
 	return count, err
+} 
+
+// TestEdgeCaseZeroRows verifies cleanup when the table has zero rows
+func TestEdgeCaseZeroRows(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping zero rows edge case test in short mode")
+	}
+
+	container, db, cleanup := setupTestMySQLContainer(t)
+	defer cleanup()
+	defer container.Terminate(context.Background())
+
+	// Create empty test table
+	tableName := "edge_zero_rows"
+	_, err := db.Exec(`CREATE TABLE acme_corp.` + tableName + ` (
+		id INT PRIMARY KEY AUTO_INCREMENT,
+		name VARCHAR(100)
+	)`)
+	if err != nil {
+		t.Fatalf("Failed to create test table: %v", err)
+	}
+
+	customConfigParser := &CustomTestConfigParser{
+		tableName: tableName,
+		columns: map[string]string{"name": "random_name"},
+	}
+	testConnector := &TestContainerConnector{db: db}
+	logger := NewZapLogger(true)
+	schemaAwareGenerator := NewSchemaAwareGofakeitGenerator(logger)
+	service := &Service{
+		dataCleaner: NewDataCleanupService(
+			testConnector,
+			customConfigParser,
+			&GofakeitGenerator{},
+			schemaAwareGenerator,
+			logger,
+			2, 5,
+		),
+	}
+	config := Config{
+		Host:      "localhost",
+		Port:      "3306",
+		User:      "root",
+		Password:  "root",
+		DB:        "acme_corp",
+		Config:    "tests/config.yaml",
+		Table:     tableName,
+		Workers:   2,
+		BatchSize: 5,
+	}
+	if err := service.dataCleaner.CleanupData(config); err != nil {
+		t.Fatalf("Cleanup failed: %v", err)
+	}
+	rowCount, err := getRowCount(db, "acme_corp", tableName)
+	if err != nil {
+		t.Fatalf("Failed to get row count: %v", err)
+	}
+	if rowCount != 0 {
+		t.Errorf("Expected 0 rows, got %d", rowCount)
+	}
+}
+
+// TestEdgeCaseBatchLargerThanRows verifies cleanup when batch size > row count
+func TestEdgeCaseBatchLargerThanRows(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping batch size > row count edge case test in short mode")
+	}
+
+	container, db, cleanup := setupTestMySQLContainer(t)
+	defer cleanup()
+	defer container.Terminate(context.Background())
+
+	tableName := "edge_batch_gt_rows"
+	_, err := db.Exec(`CREATE TABLE acme_corp.` + tableName + ` (
+		id INT PRIMARY KEY AUTO_INCREMENT,
+		name VARCHAR(100)
+	)`)
+	if err != nil {
+		t.Fatalf("Failed to create test table: %v", err)
+	}
+	// Insert 3 rows
+	for i := 1; i <= 3; i++ {
+		_, err := db.Exec(`INSERT INTO acme_corp.` + tableName + ` (name) VALUES (?)`, fmt.Sprintf("User %d", i))
+		if err != nil {
+			t.Fatalf("Failed to insert row: %v", err)
+		}
+	}
+	customConfigParser := &CustomTestConfigParser{
+		tableName: tableName,
+		columns: map[string]string{"name": "random_name"},
+	}
+	testConnector := &TestContainerConnector{db: db}
+	logger := NewZapLogger(true)
+	schemaAwareGenerator := NewSchemaAwareGofakeitGenerator(logger)
+	service := &Service{
+		dataCleaner: NewDataCleanupService(
+			testConnector,
+			customConfigParser,
+			&GofakeitGenerator{},
+			schemaAwareGenerator,
+			logger,
+			2, 10, // batch size 10 > 3 rows
+		),
+	}
+	config := Config{
+		Host:      "localhost",
+		Port:      "3306",
+		User:      "root",
+		Password:  "root",
+		DB:        "acme_corp",
+		Config:    "tests/config.yaml",
+		Table:     tableName,
+		Workers:   2,
+		BatchSize: 10,
+	}
+	if err := service.dataCleaner.CleanupData(config); err != nil {
+		t.Fatalf("Cleanup failed: %v", err)
+	}
+	rowCount, err := getRowCount(db, "acme_corp", tableName)
+	if err != nil {
+		t.Fatalf("Failed to get row count: %v", err)
+	}
+	if rowCount != 3 {
+		t.Errorf("Expected 3 rows, got %d", rowCount)
+	}
+}
+
+// TestEdgeCaseBatchSizeOne verifies cleanup when batch size is 1
+func TestEdgeCaseBatchSizeOne(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping batch size 1 edge case test in short mode")
+	}
+
+	container, db, cleanup := setupTestMySQLContainer(t)
+	defer cleanup()
+	defer container.Terminate(context.Background())
+
+	tableName := "edge_batch_size_one"
+	_, err := db.Exec(`CREATE TABLE acme_corp.` + tableName + ` (
+		id INT PRIMARY KEY AUTO_INCREMENT,
+		name VARCHAR(100)
+	)`)
+	if err != nil {
+		t.Fatalf("Failed to create test table: %v", err)
+	}
+	// Insert 5 rows
+	for i := 1; i <= 5; i++ {
+		_, err := db.Exec(`INSERT INTO acme_corp.` + tableName + ` (name) VALUES (?)`, fmt.Sprintf("User %d", i))
+		if err != nil {
+			t.Fatalf("Failed to insert row: %v", err)
+		}
+	}
+	customConfigParser := &CustomTestConfigParser{
+		tableName: tableName,
+		columns: map[string]string{"name": "random_name"},
+	}
+	testConnector := &TestContainerConnector{db: db}
+	logger := NewZapLogger(true)
+	schemaAwareGenerator := NewSchemaAwareGofakeitGenerator(logger)
+	service := &Service{
+		dataCleaner: NewDataCleanupService(
+			testConnector,
+			customConfigParser,
+			&GofakeitGenerator{},
+			schemaAwareGenerator,
+			logger,
+			3, 1, // 3 workers, batch size 1
+		),
+	}
+	config := Config{
+		Host:      "localhost",
+		Port:      "3306",
+		User:      "root",
+		Password:  "root",
+		DB:        "acme_corp",
+		Config:    "tests/config.yaml",
+		Table:     tableName,
+		Workers:   3,
+		BatchSize: 1,
+	}
+	if err := service.dataCleaner.CleanupData(config); err != nil {
+		t.Fatalf("Cleanup failed: %v", err)
+	}
+	rowCount, err := getRowCount(db, "acme_corp", tableName)
+	if err != nil {
+		t.Fatalf("Failed to get row count: %v", err)
+	}
+	if rowCount != 5 {
+		t.Errorf("Expected 5 rows, got %d", rowCount)
+	}
 } 

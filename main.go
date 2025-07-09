@@ -30,7 +30,8 @@ func createService(debug bool, workers, batchSize int) *Service {
 	logger := NewZapLogger(debug) // Use zap logger with debug flag
 	configParser := NewYAMLConfigParser(fileReader, logger)
 	fakeGenerator := &GofakeitGenerator{}
-	dataCleaner := NewDataCleanupService(dbConnector, configParser, fakeGenerator, logger, workers, batchSize)
+	schemaAwareGenerator := NewSchemaAwareGofakeitGenerator(logger)
+	dataCleaner := NewDataCleanupService(dbConnector, configParser, fakeGenerator, schemaAwareGenerator, logger, workers, batchSize)
 	tableFetcher := NewMySQLTableFetcher(dbConnector, logger)
 
 	// Create and return the service

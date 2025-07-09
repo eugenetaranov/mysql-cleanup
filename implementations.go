@@ -141,15 +141,17 @@ type DataCleanupService struct {
 	dbConnector    DatabaseConnector
 	configParser   ConfigParser
 	fakeGenerator  FakeDataGenerator
+	schemaAwareGenerator SchemaAwareFakeDataGenerator
 	logger         Logger
 	batchProcessor *BatchProcessor
 }
 
-func NewDataCleanupService(dbConnector DatabaseConnector, configParser ConfigParser, fakeGenerator FakeDataGenerator, logger Logger, workers, batchSize int) *DataCleanupService {
+func NewDataCleanupService(dbConnector DatabaseConnector, configParser ConfigParser, fakeGenerator FakeDataGenerator, schemaAwareGenerator SchemaAwareFakeDataGenerator, logger Logger, workers, batchSize int) *DataCleanupService {
 	return &DataCleanupService{
 		dbConnector:    dbConnector,
 		configParser:   configParser,
 		fakeGenerator:  fakeGenerator,
+		schemaAwareGenerator: schemaAwareGenerator,
 		logger:         logger,
 		batchProcessor: NewBatchProcessor(logger, workers, batchSize),
 	}
@@ -410,7 +412,7 @@ func (d *DataCleanupService) processBatch(db *sql.DB, job BatchJob) (int, int) {
 			continue
 		}
 		
-		fakeValue, err := d.fakeGenerator.GenerateFakeValue(fakerType)
+		fakeValue, err := d.schemaAwareGenerator.GenerateFakeValue(fakerType, job.TableName, column, db)
 		if err != nil {
 			d.logger.Warn("Failed to generate fake value", String("table", job.TableName), String("column", column), String("faker_type", fakerType), Error("error", err))
 			continue
@@ -488,7 +490,7 @@ func (d *DataCleanupService) updateSingleRow(db *sql.DB, tableName string, rowID
 			continue
 		}
 
-		fakeValue, err := d.fakeGenerator.GenerateFakeValue(fakerType)
+		fakeValue, err := d.schemaAwareGenerator.GenerateFakeValue(fakerType, tableName, column, db)
 		if err != nil {
 			d.logger.Warn("Failed to generate fake value", String("table", tableName), String("column", column), String("faker_type", fakerType), Error("error", err))
 			continue
@@ -542,6 +544,161 @@ func (d *DataCleanupService) columnExists(db *sql.DB, tableName, columnName stri
 
 // GofakeitGenerator implements FakeDataGenerator
 type GofakeitGenerator struct{}
+
+// SchemaAwareGofakeitGenerator implements SchemaAwareFakeDataGenerator
+type SchemaAwareGofakeitGenerator struct {
+	logger Logger
+}
+
+func NewSchemaAwareGofakeitGenerator(logger Logger) *SchemaAwareGofakeitGenerator {
+	return &SchemaAwareGofakeitGenerator{
+		logger: logger,
+	}
+}
+
+func (g *SchemaAwareGofakeitGenerator) GetColumnInfo(tableName, columnName string, db *sql.DB) (*ColumnInfo, error) {
+	query := `
+		SELECT 
+			DATA_TYPE,
+			CHARACTER_MAXIMUM_LENGTH,
+			IS_NULLABLE,
+			COLUMN_DEFAULT
+		FROM INFORMATION_SCHEMA.COLUMNS 
+		WHERE TABLE_SCHEMA = DATABASE() 
+		AND TABLE_NAME = ? 
+		AND COLUMN_NAME = ?
+	`
+	
+	var dataType, isNullable string
+	var maxLength sql.NullInt64
+	var defaultValue sql.NullString
+	
+	err := db.QueryRow(query, tableName, columnName).Scan(&dataType, &maxLength, &isNullable, &defaultValue)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get column info for %s.%s: %w", tableName, columnName, err)
+	}
+	
+	columnInfo := &ColumnInfo{
+		DataType:   dataType,
+		IsNullable: isNullable == "YES",
+	}
+	
+	if maxLength.Valid {
+		maxLen := int(maxLength.Int64)
+		columnInfo.MaxLength = &maxLen
+	}
+	
+	if defaultValue.Valid {
+		columnInfo.DefaultValue = &defaultValue.String
+	}
+	
+	g.logger.Debug("Retrieved column info", 
+		String("table", tableName), 
+		String("column", columnName), 
+		String("data_type", dataType),
+		Any("max_length", columnInfo.MaxLength),
+		Bool("is_nullable", columnInfo.IsNullable))
+	
+	return columnInfo, nil
+}
+
+func (g *SchemaAwareGofakeitGenerator) GenerateFakeValue(fakerType string, tableName, columnName string, db *sql.DB) (interface{}, error) {
+	g.logger.Debug("Generating schema-aware fake value", 
+		String("faker_type", fakerType), 
+		String("table", tableName), 
+		String("column", columnName))
+	
+	// Get column information
+	columnInfo, err := g.GetColumnInfo(tableName, columnName, db)
+	if err != nil {
+		g.logger.Warn("Failed to get column info, falling back to basic generation", 
+			String("table", tableName), 
+			String("column", columnName), 
+			Error("error", err))
+		// Fall back to basic generation without schema awareness
+		return g.generateBasicFakeValue(fakerType)
+	}
+	
+	// Generate the basic fake value
+	value, err := g.generateBasicFakeValue(fakerType)
+	if err != nil {
+		return nil, err
+	}
+	
+	// Truncate the value if it's a string and has a max length constraint
+	if strValue, ok := value.(string); ok && columnInfo.MaxLength != nil {
+		if len(strValue) > *columnInfo.MaxLength {
+			g.logger.Debug("Truncating string value", 
+				String("table", tableName), 
+				String("column", columnName), 
+				Int("original_length", len(strValue)), 
+				Int("max_length", *columnInfo.MaxLength))
+			value = strValue[:*columnInfo.MaxLength]
+		}
+	}
+	
+	return value, nil
+}
+
+func (g *SchemaAwareGofakeitGenerator) generateBasicFakeValue(fakerType string) (interface{}, error) {
+	// Note: We can't use structured logging here as this generator doesn't have a logger
+	log.Printf("[DEBUG] Generating fake value for type: %s", fakerType)
+	
+	switch fakerType {
+	case "random_email":
+		// Use gofakeit.Email() for realism, but add a short random number to the username for uniqueness
+		email := gofakeit.Email()
+		parts := strings.Split(email, "@")
+		if len(parts) == 2 {
+			suffix := gofakeit.Number(10, 99) // 2-digit random number
+			return fmt.Sprintf("%s%d@%s", parts[0], suffix, parts[1]), nil
+		}
+		return email, nil
+	case "random_name":
+		return gofakeit.Name(), nil
+	case "random_firstname":
+		return gofakeit.FirstName(), nil
+	case "random_lastname":
+		return gofakeit.LastName(), nil
+	case "random_company":
+		return gofakeit.Company(), nil
+	case "random_address":
+		return gofakeit.Street(), nil
+	case "random_city":
+		return gofakeit.City(), nil
+	case "random_state":
+		return gofakeit.StateAbr(), nil
+	case "random_country_code":
+		return gofakeit.CountryAbr(), nil
+	case "random_postalcode":
+		return gofakeit.Zip(), nil
+	case "random_phone_short":
+		return gofakeit.Phone(), nil
+	case "random_username":
+		return gofakeit.Username(), nil
+	case "random_id":
+		return gofakeit.UUID(), nil
+	case "random_text":
+		return gofakeit.Sentence(10), nil
+	case "random_email_subject":
+		return gofakeit.Sentence(6), nil
+	case "random_file_name":
+		return gofakeit.Word() + gofakeit.FileExtension(), nil
+	case "random_number_txt":
+		return fmt.Sprintf("%d", gofakeit.Number(1000, 9999)), nil
+	case "random_room_number_txt":
+		return fmt.Sprintf("%d", gofakeit.Number(100, 999)), nil
+	default:
+		if fakerType == "" {
+			return nil, nil // Empty string means don't update this column
+		}
+		// Check if it's a numeric value (for boolean fields)
+		if num, err := strconv.Atoi(fakerType); err == nil {
+			return num, nil
+		}
+		return nil, fmt.Errorf("unknown faker type: %s", fakerType)
+	}
+}
 
 func (g *GofakeitGenerator) GenerateFakeValue(fakerType string) (interface{}, error) {
 	// Note: We can't use structured logging here as this generator doesn't have a logger

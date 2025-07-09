@@ -30,6 +30,20 @@ type FakeDataGenerator interface {
 	GenerateFakeValue(fakerType string) (interface{}, error)
 }
 
+// SchemaAwareFakeDataGenerator interface for generating fake data with schema awareness
+type SchemaAwareFakeDataGenerator interface {
+	GenerateFakeValue(fakerType string, tableName, columnName string, db *sql.DB) (interface{}, error)
+	GetColumnInfo(tableName, columnName string, db *sql.DB) (*ColumnInfo, error)
+}
+
+// ColumnInfo represents database column metadata
+type ColumnInfo struct {
+	DataType    string
+	MaxLength   *int
+	IsNullable  bool
+	DefaultValue *string
+}
+
 // FileReader interface for file operations
 type FileReader interface {
 	ReadFile(filename string) ([]byte, error)
@@ -62,6 +76,10 @@ func Int(key string, value int) Field {
 }
 
 func Int64(key string, value int64) Field {
+	return Field{Key: key, Value: value}
+}
+
+func Bool(key string, value bool) Field {
 	return Field{Key: key, Value: value}
 }
 
