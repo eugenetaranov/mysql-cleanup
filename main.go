@@ -58,6 +58,15 @@ func main() {
 		if err := parseAndDisplayConfig(config.Config); err != nil {
 			log.Printf("Error parsing config file: %v\n", err)
 		}
+
+		// Perform the actual data cleanup
+		fmt.Println("\nPerforming Data Cleanup:")
+		fmt.Println("========================")
+		if err := CleanupData(config); err != nil {
+			log.Printf("Error during data cleanup: %v\n", err)
+		} else {
+			fmt.Println("Data cleanup completed successfully!")
+		}
 	}
 
 	// Fetch and display table data if database and table are specified
