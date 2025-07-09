@@ -7,12 +7,14 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
-	"github.com/brianvoe/gofakeit/v7"
+	"github.com/brianvoe/gofakeit/v6"
 	_ "github.com/go-sql-driver/mysql"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
-	"gopkg.in/yaml.v3"
+	"gopkg.in/yaml.v2"
 )
 
 // MySQLConnector implements DatabaseConnector
@@ -96,20 +98,60 @@ func (y *YAMLConfigParser) displayConfig(config YAMLConfig) {
 	}
 }
 
-// DataCleanupService implements DataCleaner
-type DataCleanupService struct {
-	dbConnector   DatabaseConnector
-	configParser  ConfigParser
-	fakeGenerator FakeDataGenerator
-	logger        Logger
+// BatchProcessor handles parallel batch processing of database updates
+type BatchProcessor struct {
+	workerCount int
+	batchSize   int
+	logger      Logger
 }
 
-func NewDataCleanupService(dbConnector DatabaseConnector, configParser ConfigParser, fakeGenerator FakeDataGenerator, logger Logger) *DataCleanupService {
+// BatchJob represents a batch of rows to be updated
+type BatchJob struct {
+	TableName   string
+	RowIDs      []int64
+	TableConfig TableUpdateConfig
+}
+
+// BatchResult represents the result of processing a batch
+type BatchResult struct {
+	BatchJob
+	ProcessedCount int
+	ErrorCount     int
+	Duration       time.Duration
+	Errors         []error
+}
+
+// NewBatchProcessor creates a new batch processor with optimal settings
+func NewBatchProcessor(logger Logger, workers, batchSize int) *BatchProcessor {
+	if workers <= 0 {
+		workers = 1
+	}
+	if batchSize <= 0 {
+		batchSize = 1
+	}
+	return &BatchProcessor{
+		workerCount: workers,
+		batchSize:   batchSize,
+		logger:      logger,
+	}
+}
+
+// DataCleanupService implements DataCleaner
+type DataCleanupService struct {
+	dbConnector    DatabaseConnector
+	configParser   ConfigParser
+	fakeGenerator  FakeDataGenerator
+	logger         Logger
+	batchProcessor *BatchProcessor
+}
+
+func NewDataCleanupService(dbConnector DatabaseConnector, configParser ConfigParser, fakeGenerator FakeDataGenerator, logger Logger, workers, batchSize int) *DataCleanupService {
 	return &DataCleanupService{
-		dbConnector:   dbConnector,
-		configParser:  configParser,
-		fakeGenerator: fakeGenerator,
-		logger:        logger,
+		dbConnector:    dbConnector,
+		configParser:   configParser,
+		fakeGenerator:  fakeGenerator,
+		logger:         logger,
+		batchProcessor: NewBatchProcessor(logger, workers, batchSize),
 	}
 }
 
@@ -218,7 +260,9 @@ func (d *DataCleanupService) UpdateTables(db *sql.DB, tableConfigs map[string]Ta
 }
 
 func (d *DataCleanupService) UpdateTableData(db *sql.DB, tableName string, tableConfig TableUpdateConfig) error {
-	d.logger.Debug("Starting table data update", String("table", tableName), Int("column_count", len(tableConfig.Columns)))
+	d.logger.Debug("Starting parallel table data update", String("table", tableName), Int("column_count", len(tableConfig.Columns)), Int("worker_count", d.batchProcessor.workerCount), Int("batch_size", d.batchProcessor.batchSize))
+	
+	startTime := time.Now()
 	
 	// First, get all row IDs that need to be updated
 	whereClause := ""
@@ -252,18 +296,177 @@ func (d *DataCleanupService) UpdateTableData(db *sql.DB, tableName string, table
 		return nil
 	}
 
-	d.logger.Debug("Updating rows", String("table", tableName), Int("row_count", len(rowIDs)))
+	d.logger.Debug("Starting parallel batch processing", String("table", tableName), Int("row_count", len(rowIDs)), Int("batch_size", d.batchProcessor.batchSize))
 
-	// Update each row individually
-	for _, rowID := range rowIDs {
-		if err := d.updateSingleRow(db, tableName, rowID, tableConfig); err != nil {
-			d.logger.Warn("Failed to update row", String("table", tableName), Int64("row_id", rowID), Error("error", err))
-			continue
+	// Process rows in parallel batches
+	totalProcessed, totalErrors := d.processBatchesInParallel(db, tableName, rowIDs, tableConfig)
+	
+	duration := time.Since(startTime)
+	d.logger.Debug("Parallel batch processing completed", 
+		String("table", tableName), 
+		Int("total_rows", len(rowIDs)),
+		Int("processed", totalProcessed),
+		Int("errors", totalErrors),
+		String("duration", duration.String()),
+		String("rows_per_second", fmt.Sprintf("%.2f", float64(totalProcessed)/duration.Seconds())))
+	
+	return nil
+}
+
+// processBatchesInParallel processes row batches using a worker pool
+func (d *DataCleanupService) processBatchesInParallel(db *sql.DB, tableName string, rowIDs []int64, tableConfig TableUpdateConfig) (int, int) {
+	// Create batches
+	batches := d.createBatches(rowIDs, d.batchProcessor.batchSize)
+	d.logger.Debug("Created batches", String("table", tableName), Int("batch_count", len(batches)), Int("batch_size", d.batchProcessor.batchSize))
+	
+	// Create job channel
+	jobChan := make(chan BatchJob, len(batches))
+	resultChan := make(chan BatchResult, len(batches))
+	
+	// Start workers
+	var wg sync.WaitGroup
+	for i := 0; i < d.batchProcessor.workerCount; i++ {
+		wg.Add(1)
+		go d.worker(i, db, jobChan, resultChan, &wg)
+	}
+	
+	// Send jobs
+	go func() {
+		defer close(jobChan)
+		for _, batch := range batches {
+			jobChan <- BatchJob{
+				TableName:   tableName,
+				RowIDs:      batch,
+				TableConfig: tableConfig,
+			}
+		}
+	}()
+	
+	// Collect results
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+	
+	// Process results
+	totalProcessed := 0
+	totalErrors := 0
+	for result := range resultChan {
+		totalProcessed += result.ProcessedCount
+		totalErrors += result.ErrorCount
+		
+		if result.ErrorCount > 0 {
+			d.logger.Warn("Batch had errors", 
+				String("table", result.TableName), 
+				Int("processed", result.ProcessedCount),
+				Int("errors", result.ErrorCount),
+				String("duration", result.Duration.String()))
+		} else {
+			d.logger.Debug("Batch completed successfully", 
+				String("table", result.TableName), 
+				Int("processed", result.ProcessedCount),
+				String("duration", result.Duration.String()))
 		}
 	}
+	
+	return totalProcessed, totalErrors
+}
 
-	d.logger.Debug("Successfully updated rows", String("table", tableName), Int("row_count", len(rowIDs)))
-	return nil
+// worker processes batch jobs from the job channel
+func (d *DataCleanupService) worker(workerID int, db *sql.DB, jobChan <-chan BatchJob, resultChan chan<- BatchResult, wg *sync.WaitGroup) {
+	defer wg.Done()
+	
+	for job := range jobChan {
+		startTime := time.Now()
+		processed, errors := d.processBatch(db, job)
+		duration := time.Since(startTime)
+		
+		resultChan <- BatchResult{
+			BatchJob:       job,
+			ProcessedCount: processed,
+			ErrorCount:     errors,
+			Duration:       duration,
+		}
+	}
+}
+
+// processBatch processes a single batch of rows using bulk UPDATE
+func (d *DataCleanupService) processBatch(db *sql.DB, job BatchJob) (int, int) {
+	if len(job.RowIDs) == 0 {
+		return 0, 0
+	}
+	
+	// Generate fake values for all columns once (reuse for all rows in batch)
+	columnUpdates := make(map[string]interface{})
+	for column, fakerType := range job.TableConfig.Columns {
+		// Check if column exists
+		exists, err := d.columnExists(db, job.TableName, column)
+		if err != nil {
+			d.logger.Warn("Failed to check column", String("table", job.TableName), String("column", column), Error("error", err))
+			continue
+		}
+		if !exists {
+			d.logger.Warn("Column does not exist, skipping", String("table", job.TableName), String("column", column))
+			continue
+		}
+		
+		fakeValue, err := d.fakeGenerator.GenerateFakeValue(fakerType)
+		if err != nil {
+			d.logger.Warn("Failed to generate fake value", String("table", job.TableName), String("column", column), String("faker_type", fakerType), Error("error", err))
+			continue
+		}
+		columnUpdates[column] = fakeValue
+	}
+	
+	if len(columnUpdates) == 0 {
+		return 0, 0
+	}
+	
+	// Build bulk UPDATE query
+	updates := make([]string, 0, len(columnUpdates))
+	for column := range columnUpdates {
+		updates = append(updates, fmt.Sprintf("`%s` = ?", column))
+	}
+	
+	// Create CASE statements for each column to handle different values per row
+	// This allows us to update multiple rows with different values in a single query
+	// Use DATABASE() to ensure we're updating the correct database
+	query := fmt.Sprintf("UPDATE `%s` SET %s WHERE id IN (%s)", 
+		job.TableName, 
+		strings.Join(updates, ", "),
+		strings.Repeat("?,", len(job.RowIDs)-1)+"?")
+	
+	// Prepare arguments: column values first, then row IDs
+	args := make([]interface{}, 0, len(columnUpdates)+len(job.RowIDs))
+	for _, value := range columnUpdates {
+		args = append(args, value)
+	}
+	for _, rowID := range job.RowIDs {
+		args = append(args, rowID)
+	}
+	
+	// Execute bulk update
+	result, err := db.Exec(query, args...)
+	if err != nil {
+		d.logger.Error("Failed to execute bulk update", String("table", job.TableName), Int("batch_size", len(job.RowIDs)), Error("error", err))
+		return 0, len(job.RowIDs)
+	}
+	
+	rowsAffected, _ := result.RowsAffected()
+	return int(rowsAffected), 0
+}
+
+// createBatches splits row IDs into batches of specified size
+func (d *DataCleanupService) createBatches(rowIDs []int64, batchSize int) [][]int64 {
+	var batches [][]int64
+	for i := 0; i < len(rowIDs); i += batchSize {
+		end := i + batchSize
+		if end > len(rowIDs) {
+			end = len(rowIDs)
+		}
+		batches = append(batches, rowIDs[i:end])
+	}
+	return batches
 }
 
 func (d *DataCleanupService) updateSingleRow(db *sql.DB, tableName string, rowID int64, tableConfig TableUpdateConfig) error {
@@ -319,14 +522,22 @@ func (d *DataCleanupService) updateSingleRow(db *sql.DB, tableName string, rowID
 }
 
 func (d *DataCleanupService) columnExists(db *sql.DB, tableName, columnName string) (bool, error) {
-	query := fmt.Sprintf("SHOW COLUMNS FROM `%s` LIKE '%s'", tableName, columnName)
-	rows, err := db.Query(query)
+	// Use INFORMATION_SCHEMA to check column existence with explicit database name
+	query := fmt.Sprintf(`
+		SELECT COUNT(*) 
+		FROM INFORMATION_SCHEMA.COLUMNS 
+		WHERE TABLE_SCHEMA = DATABASE() 
+		AND TABLE_NAME = '%s' 
+		AND COLUMN_NAME = '%s'
+	`, tableName, columnName)
+	
+	var count int
+	err := db.QueryRow(query).Scan(&count)
 	if err != nil {
 		return false, fmt.Errorf("failed to check column %s in table %s: %w", columnName, tableName, err)
 	}
-	defer rows.Close()
 	
-	return rows.Next(), nil
+	return count > 0, nil
 }
 
 // GofakeitGenerator implements FakeDataGenerator

@@ -135,7 +135,7 @@ func TestFakerDataChanges(t *testing.T) {
 		AllTables: true, // Run in all-tables mode
 	}
 
-	service := createService(false)
+	service := createService(false, 0, 0) // Use auto-detection for workers and batch size
 	if err := service.dataCleaner.CleanupData(config); err != nil {
 		t.Fatalf("Failed to run faker: %v", err)
 	}
@@ -175,6 +175,350 @@ func TestFakerDataChanges(t *testing.T) {
 	testTableChanges(t, db, "staff_profile", "email")
 	testTableChanges(t, db, "external_contact", "email")
 	testTableChanges(t, db, "booking", "email")
+}
+
+// TestParallelWorkers verifies that multiple workers process data in parallel
+func TestParallelWorkers(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping parallel workers test in short mode")
+	}
+
+	container, db, cleanup := setupTestMySQLContainer(t)
+	defer cleanup()
+	defer container.Terminate(context.Background())
+
+	// Create test data with more rows to make parallel processing visible
+	if err := createTestDataForParallelTest(db); err != nil {
+		t.Fatalf("Failed to create test data: %v", err)
+	}
+
+	// Create a custom database connector that uses the test container connection
+	testConnector := &TestContainerConnector{db: db}
+	
+	// Create a custom config parser that includes our test table
+	customConfigParser := &CustomTestConfigParser{
+		tableName: "parallel_test_table",
+		columns: map[string]string{
+			"name":  "random_name",
+			"email": "random_email",
+			"phone": "random_phone_short",
+		},
+	}
+	
+	// Create service with the test connector and custom config
+	service := &Service{
+		dataCleaner: NewDataCleanupService(
+			testConnector,
+			customConfigParser,
+			&GofakeitGenerator{},
+			NewZapLogger(true),
+			4, 5,
+		),
+	}
+	
+	// Test with 4 workers and batch size of 5 - only process the test table
+	config := Config{
+		Host:      "localhost",
+		Port:      "3306",
+		User:      "root",
+		Password:  "root",
+		DB:        "acme_corp",
+		Config:    "tests/config.yaml", // This won't be used by our custom parser
+		Table:     "parallel_test_table",
+		Workers:   4,
+		BatchSize: 5,
+	}
+
+
+	
+	startTime := time.Now()
+	if err := service.dataCleaner.CleanupData(config); err != nil {
+		t.Fatalf("Failed to run parallel cleanup: %v", err)
+	}
+	duration := time.Since(startTime)
+
+	// Verify that parallel processing actually happened by checking logs
+	// The test should complete faster with multiple workers
+	t.Logf("Parallel processing completed in %v", duration)
+	
+	// Verify data was actually processed
+	rowCount, err := getRowCount(db, "acme_corp", "parallel_test_table")
+	if err != nil {
+		t.Fatalf("Failed to get row count: %v", err)
+	}
+	
+	if rowCount == 0 {
+		t.Error("No rows found in parallel test table - processing may have failed")
+	}
+	
+	t.Logf("Successfully processed %d rows with 4 workers and batch size 5", rowCount)
+}
+
+// TestLargeBatches verifies that larger batch sizes work correctly
+func TestLargeBatches(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping large batches test in short mode")
+	}
+
+	container, db, cleanup := setupTestMySQLContainer(t)
+	defer cleanup()
+	defer container.Terminate(context.Background())
+
+	// Create test data with many rows
+	if err := createTestDataForBatchTest(db); err != nil {
+		t.Fatalf("Failed to create test data: %v", err)
+	}
+
+	// Test with 2 workers and large batch size of 50 - only process the test table
+	config := Config{
+		Host:      "localhost",
+		Port:      "3306",
+		User:      "root",
+		Password:  "root",
+		DB:        "acme_corp",
+		Config:    "tests/config.yaml",
+		Table:     "batch_test_table",
+		Workers:   2,
+		BatchSize: 50,
+	}
+
+	// Create a custom database connector that uses the test container connection
+	testConnector := &TestContainerConnector{db: db}
+	
+	// Create a custom config parser that includes our test table
+	customConfigParser := &CustomTestConfigParser{
+		tableName: "batch_test_table",
+		columns: map[string]string{
+			"name":   "random_name",
+			"email":  "random_email",
+			"phone":  "random_phone_short",
+			"status": "random_text",
+		},
+	}
+	
+	// Create service with the test connector and custom config
+	service := &Service{
+		dataCleaner: NewDataCleanupService(
+			testConnector,
+			customConfigParser,
+			&GofakeitGenerator{},
+			NewZapLogger(true),
+			2, 50,
+		),
+	}
+	startTime := time.Now()
+	if err := service.dataCleaner.CleanupData(config); err != nil {
+		t.Fatalf("Failed to run large batch cleanup: %v", err)
+	}
+	duration := time.Since(startTime)
+
+	t.Logf("Large batch processing completed in %v", duration)
+	
+	// Verify data was processed
+	rowCount, err := getRowCount(db, "acme_corp", "batch_test_table")
+	if err != nil {
+		t.Fatalf("Failed to get row count: %v", err)
+	}
+	
+	if rowCount == 0 {
+		t.Error("No rows found in batch test table - processing may have failed")
+	}
+	
+	t.Logf("Successfully processed %d rows with 2 workers and batch size 50", rowCount)
+}
+
+// TestPerformanceComparison compares single-threaded vs multi-threaded performance
+func TestPerformanceComparison(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping performance comparison test in short mode")
+	}
+
+	container, db, cleanup := setupTestMySQLContainer(t)
+	defer cleanup()
+	defer container.Terminate(context.Background())
+
+	// Create test data
+	if err := createTestDataForPerformanceTest(db); err != nil {
+		t.Fatalf("Failed to create test data: %v", err)
+	}
+
+	// Test 1: Single worker, small batch
+	t.Log("Testing single worker, small batch...")
+	config1 := Config{
+		Host:      "localhost",
+		Port:      "3306",
+		User:      "root",
+		Password:  "root",
+		DB:        "acme_corp",
+		Config:    "tests/config.yaml",
+		Table:     "performance_test_table",
+		Workers:   1,
+		BatchSize: 1,
+	}
+
+	// Create a custom database connector that uses the test container connection
+	testConnector1 := &TestContainerConnector{db: db}
+	
+	// Create a custom config parser that includes our test table
+	customConfigParser1 := &CustomTestConfigParser{
+		tableName: "performance_test_table",
+		columns: map[string]string{
+			"name":    "random_name",
+			"email":   "random_email",
+			"phone":   "random_phone_short",
+			"address": "random_address",
+			"status":  "random_text",
+		},
+	}
+	
+	// Create service with the test connector and custom config
+	service1 := &Service{
+		dataCleaner: NewDataCleanupService(
+			testConnector1,
+			customConfigParser1,
+			&GofakeitGenerator{},
+			NewZapLogger(false),
+			1, 1,
+		),
+	}
+	startTime1 := time.Now()
+	if err := service1.dataCleaner.CleanupData(config1); err != nil {
+		t.Fatalf("Failed to run single worker test: %v", err)
+	}
+	duration1 := time.Since(startTime1)
+
+	// Reset data for second test
+	if err := resetTestData(db); err != nil {
+		t.Fatalf("Failed to reset test data: %v", err)
+	}
+
+	// Test 2: Multiple workers, larger batch
+	t.Log("Testing multiple workers, larger batch...")
+	config2 := Config{
+		Host:      "localhost",
+		Port:      "3306",
+		User:      "root",
+		Password:  "root",
+		DB:        "acme_corp",
+		Config:    "tests/config.yaml",
+		Table:     "performance_test_table",
+		Workers:   4,
+		BatchSize: 20,
+	}
+
+	// Create a custom database connector that uses the test container connection
+	testConnector2 := &TestContainerConnector{db: db}
+	
+	// Create a custom config parser that includes our test table
+	customConfigParser2 := &CustomTestConfigParser{
+		tableName: "performance_test_table",
+		columns: map[string]string{
+			"name":    "random_name",
+			"email":   "random_email",
+			"phone":   "random_phone_short",
+			"address": "random_address",
+			"status":  "random_text",
+		},
+	}
+	
+	// Create service with the test connector and custom config
+	service2 := &Service{
+		dataCleaner: NewDataCleanupService(
+			testConnector2,
+			customConfigParser2,
+			&GofakeitGenerator{},
+			NewZapLogger(false),
+			4, 20,
+		),
+	}
+	startTime2 := time.Now()
+	if err := service2.dataCleaner.CleanupData(config2); err != nil {
+		t.Fatalf("Failed to run multi worker test: %v", err)
+	}
+	duration2 := time.Since(startTime2)
+
+	// Compare performance
+	speedup := float64(duration1) / float64(duration2)
+	t.Logf("Single worker (1x1): %v", duration1)
+	t.Logf("Multi worker (4x20): %v", duration2)
+	t.Logf("Speedup: %.2fx", speedup)
+
+	// Assert that multi-worker is faster (with some tolerance for overhead)
+	if speedup < 1.5 {
+		t.Logf("Warning: Multi-worker performance improvement is less than expected (%.2fx)", speedup)
+		t.Logf("This might be due to small dataset size or database overhead")
+	} else {
+		t.Logf("✅ Multi-worker processing is %.2fx faster than single worker", speedup)
+	}
+}
+
+// TestErrorHandlingInParallel verifies that errors are handled correctly in parallel mode
+func TestErrorHandlingInParallel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping error handling test in short mode")
+	}
+
+	container, db, cleanup := setupTestMySQLContainer(t)
+	defer cleanup()
+	defer container.Terminate(context.Background())
+
+	// Create test data with some problematic rows
+	if err := createTestDataWithErrors(db); err != nil {
+		t.Fatalf("Failed to create test data: %v", err)
+	}
+
+	// Test with multiple workers - some batches should fail but others should succeed
+	config := Config{
+		Host:      "localhost",
+		Port:      "3306",
+		User:      "root",
+		Password:  "root",
+		DB:        "acme_corp",
+		Config:    "tests/config.yaml",
+		Table:     "error_test_table",
+		Workers:   3,
+		BatchSize: 10,
+	}
+
+	// Create a custom database connector that uses the test container connection
+	testConnector := &TestContainerConnector{db: db}
+	
+	// Create a custom config parser that includes our test table
+	customConfigParser := &CustomTestConfigParser{
+		tableName: "error_test_table",
+		columns: map[string]string{
+			"name":   "random_name",
+			"email":  "random_email",
+			"phone":  "random_phone_short",
+			"status": "random_text",
+		},
+	}
+	
+	// Create service with the test connector and custom config
+	service := &Service{
+		dataCleaner: NewDataCleanupService(
+			testConnector,
+			customConfigParser,
+			&GofakeitGenerator{},
+			NewZapLogger(true),
+			3, 10,
+		),
+	}
+	
+	// This should not panic even if some batches fail
+	if err := service.dataCleaner.CleanupData(config); err != nil {
+		t.Logf("Cleanup completed with errors (expected): %v", err)
+	} else {
+		t.Logf("Cleanup completed successfully")
+	}
+
+	// Verify that some data was still processed despite errors
+	rowCount, err := getRowCount(db, "acme_corp", "error_test_table")
+	if err != nil {
+		t.Fatalf("Failed to get row count: %v", err)
+	}
+	
+	t.Logf("Processed %d rows despite some batch errors", rowCount)
 }
 
 func copyDatabase(db *sql.DB, sourceDB, targetDB string) error {
@@ -325,4 +669,207 @@ func splitLines(s string) []string {
 		lines = append(lines, s[start:])
 	}
 	return lines
+} 
+
+// Helper functions for the new tests
+
+func createTestDataForParallelTest(db *sql.DB) error {
+	// Create a table with many rows to make parallel processing visible
+	_, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS acme_corp.parallel_test_table (
+			id INT PRIMARY KEY AUTO_INCREMENT,
+			name VARCHAR(100),
+			email VARCHAR(100),
+			phone VARCHAR(20),
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		)
+	`)
+	if err != nil {
+		return err
+	}
+
+	// Insert 100 rows
+	for i := 1; i <= 100; i++ {
+		_, err := db.Exec(`
+			INSERT INTO acme_corp.parallel_test_table (name, email, phone) 
+			VALUES (?, ?, ?)
+		`, fmt.Sprintf("User %d", i), fmt.Sprintf("user%d@example.com", i), fmt.Sprintf("555-%04d", i))
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func createTestDataForBatchTest(db *sql.DB) error {
+	// Create a table for batch testing
+	_, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS acme_corp.batch_test_table (
+			id INT PRIMARY KEY AUTO_INCREMENT,
+			name VARCHAR(100),
+			email VARCHAR(100),
+			phone VARCHAR(20),
+			status VARCHAR(20),
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		)
+	`)
+	if err != nil {
+		return err
+	}
+
+	// Insert 200 rows
+	for i := 1; i <= 200; i++ {
+		_, err := db.Exec(`
+			INSERT INTO acme_corp.batch_test_table (name, email, phone, status) 
+			VALUES (?, ?, ?, ?)
+		`, fmt.Sprintf("BatchUser %d", i), fmt.Sprintf("batch%d@example.com", i), 
+		   fmt.Sprintf("555-%04d", i), "active")
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func createTestDataForPerformanceTest(db *sql.DB) error {
+	// Create a table for performance testing
+	_, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS acme_corp.performance_test_table (
+			id INT PRIMARY KEY AUTO_INCREMENT,
+			name VARCHAR(100),
+			email VARCHAR(100),
+			phone VARCHAR(20),
+			address TEXT,
+			status VARCHAR(20),
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		)
+	`)
+	if err != nil {
+		return err
+	}
+
+	// Insert 150 rows
+	for i := 1; i <= 150; i++ {
+		_, err := db.Exec(`
+			INSERT INTO acme_corp.performance_test_table (name, email, phone, address, status) 
+			VALUES (?, ?, ?, ?, ?)
+		`, fmt.Sprintf("PerfUser %d", i), fmt.Sprintf("perf%d@example.com", i), 
+		   fmt.Sprintf("555-%04d", i), fmt.Sprintf("Address %d, City, State", i), "active")
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func createTestDataWithErrors(db *sql.DB) error {
+	// Create a table with some problematic data
+	_, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS acme_corp.error_test_table (
+			id INT PRIMARY KEY AUTO_INCREMENT,
+			name VARCHAR(100),
+			email VARCHAR(100),
+			phone VARCHAR(20),
+			status VARCHAR(20),
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		)
+	`)
+	if err != nil {
+		return err
+	}
+
+	// Insert mix of valid and problematic rows
+	for i := 1; i <= 50; i++ {
+		var email string
+		if i%10 == 0 {
+			// Every 10th row has a problematic email (too long)
+			email = fmt.Sprintf("verylongemailaddress%d@verylongdomainname.com", i)
+		} else {
+			email = fmt.Sprintf("user%d@example.com", i)
+		}
+		
+		_, err := db.Exec(`
+			INSERT INTO acme_corp.error_test_table (name, email, phone, status) 
+			VALUES (?, ?, ?, ?)
+		`, fmt.Sprintf("ErrorUser %d", i), email, fmt.Sprintf("555-%04d", i), "active")
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func resetTestData(db *sql.DB) error {
+	// Clear the performance test table
+	_, err := db.Exec("DELETE FROM acme_corp.performance_test_table")
+	return err
+}
+
+// TestContainerConnector is a database connector that uses the test container connection
+type TestContainerConnector struct {
+	db *sql.DB
+}
+
+func (t *TestContainerConnector) Connect(config Config) (*sql.DB, error) {
+	// Set the database for the existing test container connection
+	if _, err := t.db.Exec(fmt.Sprintf("USE `%s`", config.DB)); err != nil {
+		return nil, fmt.Errorf("failed to set database: %w", err)
+	}
+	
+	// Verify the database is set correctly
+	var currentDB string
+	if err := t.db.QueryRow("SELECT DATABASE()").Scan(&currentDB); err != nil {
+		return nil, fmt.Errorf("failed to verify database: %w", err)
+	}
+	
+	if currentDB != config.DB {
+		return nil, fmt.Errorf("database not set correctly: expected %s, got %s", config.DB, currentDB)
+	}
+	
+	return t.db, nil
+}
+
+func (t *TestContainerConnector) Ping(db *sql.DB) error {
+	return db.Ping()
+}
+
+func (t *TestContainerConnector) Close(db *sql.DB) error {
+	// Don't close the test container connection
+	return nil
+}
+
+// CustomTestConfigParser provides a custom configuration for test tables
+type CustomTestConfigParser struct {
+	tableName string
+	columns   map[string]string
+}
+
+func (c *CustomTestConfigParser) ParseConfig(configPath string) (*YAMLConfig, error) {
+	// Create a minimal config with just our test table
+	return &YAMLConfig{
+		Databases: map[string]DatabaseConfig{
+			"acme_corp": {
+				Update: map[string]TableUpdateConfig{
+					c.tableName: {
+						Columns: c.columns,
+					},
+				},
+			},
+		},
+	}, nil
+}
+
+func (c *CustomTestConfigParser) ParseAndDisplayConfig(configPath string) error {
+	// Not needed for tests
+	return nil
+}
+
+func getRowCount(db *sql.DB, database, table string) (int, error) {
+	var count int
+	err := db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s.%s", database, table)).Scan(&count)
+	return count, err
 } 

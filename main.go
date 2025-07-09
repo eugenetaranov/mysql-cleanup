@@ -18,17 +18,19 @@ type Config struct {
 	Table     string
 	AllTables bool
 	Debug     bool
+	Workers   int
+	BatchSize int
 }
 
 // createService creates and wires up all dependencies
-func createService(debug bool) *Service {
+func createService(debug bool, workers, batchSize int) *Service {
 	// Create concrete implementations
 	dbConnector := &MySQLConnector{}
 	fileReader := &OSFileReader{}
 	logger := NewZapLogger(debug) // Use zap logger with debug flag
 	configParser := NewYAMLConfigParser(fileReader, logger)
 	fakeGenerator := &GofakeitGenerator{}
-	dataCleaner := NewDataCleanupService(dbConnector, configParser, fakeGenerator, logger)
+	dataCleaner := NewDataCleanupService(dbConnector, configParser, fakeGenerator, logger, workers, batchSize)
 	tableFetcher := NewMySQLTableFetcher(dbConnector, logger)
 
 	// Create and return the service
@@ -65,12 +67,14 @@ func main() {
 	flag.StringVar(&config.Table, "table", getEnvWithDefault("TABLE", ""), "Table name")
 	flag.BoolVar(&config.AllTables, "all-tables", false, "Process all tables in the database")
 	flag.BoolVar(&config.Debug, "debug", false, "Enable debug logging")
+	flag.IntVar(&config.Workers, "workers", 1, "Number of worker goroutines (default: 1)")
+	flag.IntVar(&config.BatchSize, "batch-size", 1, "Batch size for updates (default: 1)")
 
 	// Parse flags
 	flag.Parse()
 
 	// Create service with all dependencies
-	service := createService(config.Debug)
+	service := createService(config.Debug, config.Workers, config.BatchSize)
 	service.logger.Debug("Service created successfully")
 
 	// Output the provided arguments

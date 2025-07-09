@@ -117,4 +117,4 @@ tasks:
       - task: build
       - task: reset
       - sleep 10
-      - ../bin/mysql_cleanup -config config.yaml -host localhost -port 3306 -user test_user -password test_password -db acme_corp -table account_user
+      - ../bin/mysql_cleanup -config config.yaml -host localhost -port 3306 -user test_user -password test_password -db acme_corp -table account_user -workers 4 -batch-size 5
