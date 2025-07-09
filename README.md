@@ -73,6 +73,7 @@ cp env.example .env
 | `-db` | `DB` | (empty) | Database name (required) |
 | `-table` | `TABLE` | (empty) | Table name (required for single table mode) |
 | `-all-tables` | (none) | false | Process all tables (required for all tables mode) |
+| `-debug` | (none) | false | Enable debug logging |
 
 ## Priority Order
 
@@ -80,19 +81,52 @@ cp env.example .env
 2. Environment variables
 3. Default values (lowest priority)
 
+## Logging
+
+The application uses structured logging with different levels:
+
+### Log Levels
+- **Info**: Essential information about the operation (default)
+- **Debug**: Detailed execution flow and configuration details (use `-debug` flag)
+- **Warn**: Warning messages for non-critical issues
+- **Error**: Error messages for critical failures
+
+### Debug Mode
+Enable detailed logging with the `-debug` flag:
+
+```bash
+# Normal operation (Info level and above)
+./bin/mysql_cleanup -host=localhost -user=root -db=mydb -table=mytable
+
+# Debug mode (all levels including Debug)
+./bin/mysql_cleanup -host=localhost -user=root -db=mydb -table=mytable -debug
+```
+
+Debug mode shows:
+- Configuration details
+- Database connection steps
+- SQL query execution
+- Row-by-row processing details
+- YAML configuration parsing
+
 ## Example Output
 
+### Normal Mode (Info level)
 ```
-MySQL Cleanup CLI
-==================
-Host: localhost
-User: root
-Port: 3306
-Password: ********
-Config: /path/to/config.json
-Database: mydb
-Table: mytable
-Mode: Single table
+2025/07/09 03:01:32 Starting MySQL Cleanup CLI...
+2025/07/09 03:01:32 Connecting to MySQL database: root@localhost:3306/test
+2025-07-09T03:01:32.336+0200    ERROR   Error fetching table data  {"error": "failed to ping database: ..."}
+```
+
+### Debug Mode
+```
+2025/07/09 03:01:35 Starting MySQL Cleanup CLI...
+2025-07-09T03:01:35.911+0200    DEBUG   Service created successfully
+2025-07-09T03:01:35.911+0200    DEBUG   MySQL Cleanup CLI
+2025-07-09T03:01:35.911+0200    DEBUG   Configuration   {"host": "localhost", "user": "root", "port": "3306", "password": "<empty>", "config": "", "database": "test"}
+2025-07-09T03:01:35.911+0200    DEBUG   Mode: Single table      {"table": "users"}
+2025/07/09 03:01:35 Connecting to MySQL database: root@localhost:3306/test
+2025-07-09T03:01:35.915+0200    ERROR   Error fetching table data  {"error": "failed to ping database: ..."}
 ```
 
 ## Testing

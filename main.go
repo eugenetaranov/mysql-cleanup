@@ -2,7 +2,6 @@ package main
 
 import (
 	"flag"
-	"fmt"
 	"log"
 	"os"
 
@@ -18,14 +17,15 @@ type Config struct {
 	DB        string
 	Table     string
 	AllTables bool
+	Debug     bool
 }
 
 // createService creates and wires up all dependencies
-func createService() *Service {
+func createService(debug bool) *Service {
 	// Create concrete implementations
 	dbConnector := &MySQLConnector{}
 	fileReader := &OSFileReader{}
-	logger := NewZapLogger() // Use zap logger instead of std logger
+	logger := NewZapLogger(debug) // Use zap logger with debug flag
 	configParser := NewYAMLConfigParser(fileReader, logger)
 	fakeGenerator := &GofakeitGenerator{}
 	dataCleaner := NewDataCleanupService(dbConnector, configParser, fakeGenerator, logger)
@@ -47,8 +47,11 @@ func main() {
 	// Load .env file if it exists
 	if err := godotenv.Load(); err != nil {
 		// It's okay if .env doesn't exist
+		// Note: We can't use service.logger here as service isn't created yet
 		log.Println("No .env file found, continuing...")
 	}
+
+	log.Println("Starting MySQL Cleanup CLI...")
 
 	// Define flags
 	var config Config
@@ -61,61 +64,72 @@ func main() {
 	flag.StringVar(&config.DB, "db", getEnvWithDefault("DB", ""), "Database name")
 	flag.StringVar(&config.Table, "table", getEnvWithDefault("TABLE", ""), "Table name")
 	flag.BoolVar(&config.AllTables, "all-tables", false, "Process all tables in the database")
+	flag.BoolVar(&config.Debug, "debug", false, "Enable debug logging")
 
 	// Parse flags
 	flag.Parse()
 
 	// Create service with all dependencies
-	service := createService()
+	service := createService(config.Debug)
+	service.logger.Debug("Service created successfully")
 
 	// Output the provided arguments
-	fmt.Println("MySQL Cleanup CLI")
-	fmt.Println("==================")
-	fmt.Printf("Host: %s\n", config.Host)
-	fmt.Printf("User: %s\n", config.User)
-	fmt.Printf("Port: %s\n", config.Port)
-	fmt.Printf("Password: %s\n", maskPassword(config.Password))
-	fmt.Printf("Config: %s\n", config.Config)
-	fmt.Printf("Database: %s\n", config.DB)
+	service.logger.Debug("MySQL Cleanup CLI")
+	service.logger.Debug("==================")
+	service.logger.Debug("Configuration", 
+		String("host", config.Host),
+		String("user", config.User),
+		String("port", config.Port),
+		String("password", maskPassword(config.Password)),
+		String("config", config.Config),
+		String("database", config.DB),
+	)
 	if config.AllTables {
-		fmt.Printf("Mode: All tables\n")
+		service.logger.Debug("Mode: All tables")
 	} else {
-		fmt.Printf("Table: %s\n", config.Table)
+		service.logger.Debug("Mode: Single table", String("table", config.Table))
 	}
 
 	// Parse and display YAML configuration if provided
 	if config.Config != "" {
-		fmt.Println("\nYAML Configuration:")
-		fmt.Println("===================")
+		service.logger.Debug("Parsing YAML configuration", String("config_path", config.Config))
+		service.logger.Debug("YAML Configuration:")
+		service.logger.Debug("===================")
 		if err := service.configParser.ParseAndDisplayConfig(config.Config); err != nil {
-			log.Printf("Error parsing config file: %v\n", err)
+			service.logger.Error("Error parsing config file", Error("error", err))
 		}
 
 		// Validate arguments
+		service.logger.Debug("Validating arguments")
 		if config.DB == "" {
-			log.Fatal("Error: -db argument is required")
+			service.logger.Error("Error: -db argument is required")
+			os.Exit(1)
 		}
 
 		if !config.AllTables && config.Table == "" {
-			log.Fatal("Error: Either -table or -all-tables argument is required")
+			service.logger.Error("Error: Either -table or -all-tables argument is required")
+			os.Exit(1)
 		}
+		service.logger.Debug("Arguments validated successfully")
 
 		// Perform the actual data cleanup
-		fmt.Println("\nPerforming Data Cleanup:")
-		fmt.Println("========================")
+		service.logger.Debug("Starting data cleanup process")
+		service.logger.Debug("Performing Data Cleanup:")
+		service.logger.Debug("========================")
 		if err := service.dataCleaner.CleanupData(config); err != nil {
-			log.Printf("Error during data cleanup: %v\n", err)
+			service.logger.Error("Error during data cleanup", Error("error", err))
 		} else {
-			fmt.Println("Data cleanup completed successfully!")
+			service.logger.Info("Data cleanup completed successfully!")
 		}
 	}
 
 	// Fetch and display table data if database and table are specified
 	if config.DB != "" && config.Table != "" {
-		fmt.Println("\nTable Data:")
-		fmt.Println("===========")
+		service.logger.Debug("Fetching table data for display", String("database", config.DB), String("table", config.Table))
+		service.logger.Debug("Table Data:")
+		service.logger.Debug("===========")
 		if err := service.tableFetcher.FetchAndDisplayTableData(config); err != nil {
-			log.Printf("Error fetching table data: %v\n", err)
+			service.logger.Error("Error fetching table data", Error("error", err))
 		}
 	}
 }

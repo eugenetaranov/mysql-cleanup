@@ -132,9 +132,10 @@ func TestFakerDataChanges(t *testing.T) {
 		Password: "root",
 		DB:       "acme_corp",
 		Config:   "tests/config.yaml",
+		AllTables: true, // Run in all-tables mode
 	}
 
-	service := createService()
+	service := createService(false)
 	if err := service.dataCleaner.CleanupData(config); err != nil {
 		t.Fatalf("Failed to run faker: %v", err)
 	}
