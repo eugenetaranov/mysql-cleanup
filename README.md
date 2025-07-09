@@ -23,10 +23,18 @@ A simple Go CLI application for MySQL cleanup operations with flexible parameter
 
 ## Usage
 
-### Command Line Arguments
+### Single Table Mode
+Process a specific table from the configuration:
 
 ```bash
 ./bin/mysql_cleanup -host=localhost -user=root -port=3306 -password=mypass -db=mydb -table=mytable
+```
+
+### All Tables Mode
+Process all tables defined in the configuration:
+
+```bash
+./bin/mysql_cleanup -host=localhost -user=root -port=3306 -password=mypass -db=mydb -all-tables
 ```
 
 ### Environment Variables
@@ -62,8 +70,9 @@ cp env.example .env
 | `-port` | `PORT` | `3306` | Database port |
 | `-password` | `PASSWORD` | (empty) | Database password |
 | `-config` | `CONFIG` | (empty) | Configuration file path |
-| `-db` | `DB` | (empty) | Database name |
-| `-table` | `TABLE` | (empty) | Table name |
+| `-db` | `DB` | (empty) | Database name (required) |
+| `-table` | `TABLE` | (empty) | Table name (required for single table mode) |
+| `-all-tables` | (none) | false | Process all tables (required for all tables mode) |
 
 ## Priority Order
 
@@ -83,6 +92,7 @@ Password: ********
 Config: /path/to/config.json
 Database: mydb
 Table: mytable
+Mode: Single table
 ```
 
 ## Testing

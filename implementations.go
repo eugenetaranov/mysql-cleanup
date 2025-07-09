@@ -137,14 +137,31 @@ func (d *DataCleanupService) CleanupData(config Config) error {
 		// Handle truncate tables
 		if len(dbConfig.Truncate) > 0 {
 			if err := d.TruncateTables(db, dbConfig.Truncate); err != nil {
-				d.logger.Printf("Warning: failed to truncate tables: %v", err)
+				d.logger.Warn("Failed to truncate tables", Error("error", err))
 			}
 		}
 
 		// Handle update tables
 		if len(dbConfig.Update) > 0 {
-			if err := d.UpdateTables(db, dbConfig.Update); err != nil {
-				d.logger.Printf("Warning: failed to update tables: %v", err)
+			if config.AllTables {
+				// Process all tables
+				d.logger.Info("Processing all tables", Int("table_count", len(dbConfig.Update)))
+				if err := d.UpdateTables(db, dbConfig.Update); err != nil {
+					d.logger.Error("Failed to update tables", Error("error", err))
+					return err
+				}
+			} else {
+				// Process only the specified table
+				tableConfig, exists := dbConfig.Update[config.Table]
+				if !exists {
+					return fmt.Errorf("table '%s' not found in configuration", config.Table)
+				}
+
+				d.logger.Info("Processing single table", String("table", config.Table))
+				if err := d.UpdateTableData(db, config.Table, tableConfig); err != nil {
+					d.logger.Error("Failed to update table", String("table", config.Table), Error("error", err))
+					return err
+				}
 			}
 		}
 	}

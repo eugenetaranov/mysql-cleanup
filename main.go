@@ -10,13 +10,14 @@ import (
 )
 
 type Config struct {
-	Host     string
-	User     string
-	Port     string
-	Password string
-	Config   string
-	DB       string
-	Table    string
+	Host      string
+	User      string
+	Port      string
+	Password  string
+	Config    string
+	DB        string
+	Table     string
+	AllTables bool
 }
 
 // createService creates and wires up all dependencies
@@ -59,6 +60,7 @@ func main() {
 	flag.StringVar(&config.Config, "config", getEnvWithDefault("CONFIG", ""), "Configuration file path")
 	flag.StringVar(&config.DB, "db", getEnvWithDefault("DB", ""), "Database name")
 	flag.StringVar(&config.Table, "table", getEnvWithDefault("TABLE", ""), "Table name")
+	flag.BoolVar(&config.AllTables, "all-tables", false, "Process all tables in the database")
 
 	// Parse flags
 	flag.Parse()
@@ -75,7 +77,11 @@ func main() {
 	fmt.Printf("Password: %s\n", maskPassword(config.Password))
 	fmt.Printf("Config: %s\n", config.Config)
 	fmt.Printf("Database: %s\n", config.DB)
-	fmt.Printf("Table: %s\n", config.Table)
+	if config.AllTables {
+		fmt.Printf("Mode: All tables\n")
+	} else {
+		fmt.Printf("Table: %s\n", config.Table)
+	}
 
 	// Parse and display YAML configuration if provided
 	if config.Config != "" {
@@ -83,6 +89,15 @@ func main() {
 		fmt.Println("===================")
 		if err := service.configParser.ParseAndDisplayConfig(config.Config); err != nil {
 			log.Printf("Error parsing config file: %v\n", err)
+		}
+
+		// Validate arguments
+		if config.DB == "" {
+			log.Fatal("Error: -db argument is required")
+		}
+
+		if !config.AllTables && config.Table == "" {
+			log.Fatal("Error: Either -table or -all-tables argument is required")
 		}
 
 		// Perform the actual data cleanup
