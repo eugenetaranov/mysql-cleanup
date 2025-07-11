@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"time"
 )
 
 // DatabaseConnector interface for database operations
@@ -15,14 +16,15 @@ type DatabaseConnector interface {
 type ConfigParser interface {
 	ParseConfig(configPath string) (*YAMLConfig, error)
 	ParseAndDisplayConfig(configPath string) error
+	ParseAndDisplayConfigFiltered(configPath string, config Config) error
 }
 
 // DataCleaner interface for data cleanup operations
 type DataCleaner interface {
-	CleanupData(config Config) error
+	CleanupData(config Config) (*CleanupStats, error)
 	TruncateTables(db *sql.DB, tables []string) error
-	UpdateTables(db *sql.DB, databaseName string, tableConfigs map[string]TableUpdateConfig) error
-	UpdateTableData(db *sql.DB, databaseName, tableName string, tableConfig TableUpdateConfig) error
+	UpdateTables(db *sql.DB, databaseName string, tableConfigs map[string]TableUpdateConfig) (*CleanupStats, error)
+	UpdateTableData(db *sql.DB, databaseName, tableName string, tableConfig TableUpdateConfig) (int, error)
 }
 
 // FakeDataGenerator interface for generating fake data
@@ -42,6 +44,13 @@ type ColumnInfo struct {
 	MaxLength    *int
 	IsNullable   bool
 	DefaultValue *string
+}
+
+// CleanupStats represents the statistics from a cleanup operation
+type CleanupStats struct {
+	TotalRowsProcessed int
+	TotalDuration      time.Duration
+	TablesProcessed    int
 }
 
 // FileReader interface for file operations

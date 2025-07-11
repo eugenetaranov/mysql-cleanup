@@ -203,6 +203,50 @@ tests/
         └── 02-data.sql    # Sample test data
 ```
 
+## Test Suite Overview
+
+The project includes a comprehensive test suite with 14 test functions covering unit tests, integration tests, and edge cases:
+
+| Test Name | Type | File | Purpose/Scope |
+|-----------|------|------|---------------|
+| **TestDatabaseConnection** | Unit | `implementations_test.go` | Verifies MySQL DSN (Data Source Name) formatting and connection string validation |
+| **TestFakerGeneration** | Unit | `implementations_test.go` | Validates fake data generation for emails, names, phones, addresses, and error handling |
+| **TestYAMLParsing** | Unit | `implementations_test.go` | Validates YAML configuration parser functionality and error handling |
+| **TestSimpleContainer** | Basic | `simple_test.go` | Basic MySQL database connectivity test using test containers |
+| **TestMySQLContainerSeedAndQuery** | Integration | `integration_test.go` | Verifies MySQL container startup, data seeding, and query execution |
+| **TestFakerDataChanges** | Integration | `integration_test.go` | End-to-end data cleanup workflow testing with database verification |
+| **TestParallelWorkers** | Integration | `integration_test.go` | Validates multi-worker parallel processing and concurrency handling |
+| **TestLargeBatches** | Integration | `integration_test.go` | Tests handling of large batch sizes without memory issues |
+| **TestPerformanceComparison** | Integration | `integration_test.go` | Benchmarks single-threaded vs multi-threaded processing performance |
+| **TestErrorHandlingInParallel** | Integration | `integration_test.go` | Validates error handling when multiple workers encounter issues |
+| **TestEdgeCaseZeroRows** | Integration | `integration_test.go` | Handles empty tables gracefully without errors or crashes |
+| **TestEdgeCaseBatchLargerThanRows** | Integration | `integration_test.go` | Handles cases where batch size exceeds total table rows |
+| **TestEdgeCaseBatchSizeOne** | Integration | `integration_test.go` | Validates minimum batch size behavior and single-row processing |
+| **TestNonIdPrimaryKey** | Integration | `integration_test.go` | Handles tables with non-standard primary key column names |
+| **TestCompositePrimaryKey** | Integration | `integration_test.go` | Handles tables with composite primary keys (multiple columns) |
+| **TestS3ConfigDownload** | Integration | `integration_test.go` | Validates S3 configuration file downloading and parsing |
+
+### Test Categories
+
+#### 🔧 **Unit Tests (3 tests)**
+Fast, isolated tests that verify individual components without external dependencies.
+- Database connection validation
+- Fake data generation logic
+- Configuration parsing
+
+#### 🐳 **Container Tests (1 test)**
+Basic connectivity tests using Docker containers.
+- MySQL container setup and connectivity
+
+#### 🔄 **Integration Tests (11 tests)**
+End-to-end tests using testcontainers with real MySQL instances.
+- Complete workflow validation
+- Performance benchmarking  
+- Error handling verification
+- Edge case coverage
+- Primary key variations
+- External configuration sources
+
 ### Integration Test Details
 
 Integration tests use testcontainers-go to:

@@ -456,7 +456,7 @@ func createTestService(db *sql.DB, workers, batchSize int) *Service {
 			"email":   "random_email",
 			"address": "random_address",
 			"phone":   "random_phone_short",
-			"notes":   "random_text",
+			"status":  "random_text", // Fixed: use "status" instead of non-existent "notes"
 		},
 	}
 	schemaAwareGenerator := NewSchemaAwareGofakeitGenerator(logger)
@@ -548,8 +548,7 @@ func TestErrorHandlingInParallel(t *testing.T) {
 }
 
 func copyDatabase(db *sql.DB, sourceDB, targetDB string) error {
-	// Use mysqldump to copy the database
-	// For simplicity, we'll just recreate the target DB and copy the data
+	// Create the target database
 	if _, err := db.Exec(fmt.Sprintf("DROP DATABASE IF EXISTS %s", targetDB)); err != nil {
 		return err
 	}
@@ -557,20 +556,36 @@ func copyDatabase(db *sql.DB, sourceDB, targetDB string) error {
 		return err
 	}
 
-	// Copy schema and data
-	if _, err := db.Exec(fmt.Sprintf("USE %s", targetDB)); err != nil {
-		return err
+	// Get all tables from source database
+	tablesQuery := "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = ?"
+	rows, err := db.Query(tablesQuery, sourceDB)
+	if err != nil {
+		return fmt.Errorf("failed to get tables from source database: %v", err)
+	}
+	defer rows.Close()
+
+	var tables []string
+	for rows.Next() {
+		var tableName string
+		if err := rows.Scan(&tableName); err != nil {
+			return fmt.Errorf("failed to scan table name: %v", err)
+		}
+		tables = append(tables, tableName)
 	}
 
-	dir := "tests/mysql/init"
-	schemaFile := filepath.Join(dir, "schema.sql.seed")
-	dataFile := filepath.Join(dir, "data.sql.seed")
+	// Copy each table structure and data
+	for _, table := range tables {
+		// Copy table structure
+		createTableQuery := fmt.Sprintf("CREATE TABLE %s.%s LIKE %s.%s", targetDB, table, sourceDB, table)
+		if _, err := db.Exec(createTableQuery); err != nil {
+			return fmt.Errorf("failed to create table %s: %v", table, err)
+		}
 
-	if err := execSQLFile(db, schemaFile); err != nil {
-		return fmt.Errorf("failed to copy schema: %v", err)
-	}
-	if err := execSQLFile(db, dataFile); err != nil {
-		return fmt.Errorf("failed to copy data: %v", err)
+		// Copy table data
+		copyDataQuery := fmt.Sprintf("INSERT INTO %s.%s SELECT * FROM %s.%s", targetDB, table, sourceDB, table)
+		if _, err := db.Exec(copyDataQuery); err != nil {
+			return fmt.Errorf("failed to copy data for table %s: %v", table, err)
+		}
 	}
 
 	return nil

@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
 	"os"
 
@@ -82,27 +83,21 @@ func main() {
 	// Output the provided arguments
 	service.logger.Debug("MySQL Cleanup CLI")
 	service.logger.Debug("==================")
-	service.logger.Debug("Configuration",
-		String("host", config.Host),
-		String("user", config.User),
-		String("port", config.Port),
-		String("password", maskPassword(config.Password)),
-		String("config", config.Config),
-		String("database", config.DB),
-	)
+	service.logger.Debug(fmt.Sprintf("Configuration - host: %s, user: %s, port: %s, password: %s, config: %s, database: %s",
+		config.Host, config.User, config.Port, maskPassword(config.Password), config.Config, config.DB))
 	if config.AllTables {
 		service.logger.Debug("Mode: All tables")
 	} else {
-		service.logger.Debug("Mode: Single table", String("table", config.Table))
+		service.logger.Debug(fmt.Sprintf("Mode: Single table - table: %s", config.Table))
 	}
 
 	// Parse and display YAML configuration if provided
 	if config.Config != "" {
-		service.logger.Debug("Parsing YAML configuration", String("config_path", config.Config))
+		service.logger.Debug(fmt.Sprintf("Parsing YAML configuration - config_path: %s", config.Config))
 		service.logger.Debug("YAML Configuration:")
 		service.logger.Debug("===================")
-		if err := service.configParser.ParseAndDisplayConfig(config.Config); err != nil {
-			service.logger.Error("Error parsing config file", Error("error", err))
+		if err := service.configParser.ParseAndDisplayConfigFiltered(config.Config, config); err != nil {
+			service.logger.Error(fmt.Sprintf("Error parsing config file - error: %s", err))
 		}
 
 		// Validate arguments
@@ -122,22 +117,17 @@ func main() {
 		service.logger.Debug("Starting data cleanup process")
 		service.logger.Debug("Performing Data Cleanup:")
 		service.logger.Debug("========================")
-		if err := service.dataCleaner.CleanupData(config); err != nil {
-			service.logger.Error("Error during data cleanup", Error("error", err))
+		stats, err := service.dataCleaner.CleanupData(config)
+		if err != nil {
+			service.logger.Error(fmt.Sprintf("Error during data cleanup - error: %s", err))
 		} else {
-			service.logger.Info("Data cleanup completed successfully!")
+			service.logger.Info(fmt.Sprintf("Data cleanup completed successfully! total_rows_processed: %d, tables_processed: %d, total_duration: %s",
+				stats.TotalRowsProcessed, stats.TablesProcessed, FormatDuration(stats.TotalDuration)))
 		}
 	}
 
-	// Fetch and display table data if database and table are specified
-	if config.DB != "" && config.Table != "" {
-		service.logger.Debug("Fetching table data for display", String("database", config.DB), String("table", config.Table))
-		service.logger.Debug("Table Data:")
-		service.logger.Debug("===========")
-		if err := service.tableFetcher.FetchAndDisplayTableData(config); err != nil {
-			service.logger.Error("Error fetching table data", Error("error", err))
-		}
-	}
+	// Table data is already shown via sample data during batch processing
+	// No need to dump the entire table afterwards
 }
 
 // getEnvWithDefault returns the environment variable value or a default if not set

@@ -49,8 +49,8 @@ func TestFakerGeneration(t *testing.T) {
 		{"name", "random_name", false, false},
 		{"phone", "random_phone_short", false, false},
 		{"address", "random_address", false, false},
-		{"invalid_faker_type", "non_existent_faker", true, false}, // Expect error for non-existent faker type
-		{"nil_faker_type", "", true, false},                       // Expect error for empty faker type
+		{"invalid_faker_type", "non_existent_faker", true, true}, // Expect error for non-existent faker type
+		{"nil_faker_type", "", true, false},                      // Expect nil for empty faker type (no error)
 	}
 
 	for _, tt := range testCases {
