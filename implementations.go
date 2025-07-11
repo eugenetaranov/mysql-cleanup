@@ -237,6 +237,8 @@ type DataCleanupService struct {
 	batchProcessor       *BatchProcessor
 	columnInfoCache      map[string]map[string]*ColumnInfo
 	cacheMutex           sync.RWMutex
+	workerBatchTimes     map[int][]time.Duration // Track batch times per worker for ETA calculation
+	workerTimesMutex     sync.RWMutex            // Mutex for worker batch times
 }
 
 func NewDataCleanupService(dbConnector DatabaseConnector, configParser ConfigParser, fakeGenerator FakeDataGenerator, schemaAwareGenerator SchemaAwareFakeDataGenerator, logger Logger, workers, batchSize int) *DataCleanupService {
@@ -248,6 +250,7 @@ func NewDataCleanupService(dbConnector DatabaseConnector, configParser ConfigPar
 		logger:               logger,
 		batchProcessor:       NewBatchProcessor(logger, workers, batchSize),
 		columnInfoCache:      make(map[string]map[string]*ColumnInfo),
+		workerBatchTimes:     make(map[int][]time.Duration),
 	}
 }
 
@@ -483,14 +486,14 @@ func (d *DataCleanupService) UpdateTableData(db *sql.DB, databaseName, tableName
 	d.logger.Info(fmt.Sprintf("Table processing completed - table: %s, total_rows: %d, processed: %d, errors: %d, duration: %s, rows_per_second: %.1f",
 		tableName, len(pkValues), totalProcessed, totalErrors, FormatDuration(duration), float64(totalProcessed)/duration.Seconds()))
 
-	d.logger.Debug(fmt.Sprintf("Parallel batch processing completed - table: %s, total_rows: %d, processed: %d, errors: %d, duration: %s, rows_per_second: %.1f",
-		tableName, len(pkValues), totalProcessed, totalErrors, FormatDuration(duration), float64(totalProcessed)/duration.Seconds()))
-
 	return totalProcessed, nil
 }
 
 // processBatchesInParallelPK processes row batches using a worker pool (PK-aware)
 func (d *DataCleanupService) processBatchesInParallelPK(db *sql.DB, databaseName, tableName string, pkCols []string, pkValues [][]interface{}, tableConfig TableUpdateConfig, validColumns map[string]string) (int, int) {
+	// Reset worker batch times for fresh ETA calculation
+	d.resetWorkerBatchTimes()
+
 	batches := d.createBatchesPK(pkValues, d.batchProcessor.batchSize)
 
 	jobChan := make(chan BatchJob, len(batches))
@@ -551,20 +554,24 @@ func (d *DataCleanupService) processBatchesInParallelPK(db *sql.DB, databaseName
 		totalProcessed += result.ProcessedCount
 		totalErrors += result.ErrorCount
 
-		// Calculate percentage completion
+		// Record batch time for ETA calculation
+		d.recordBatchTime(result.WorkerID, result.Duration)
+
+		// Calculate percentage completion and ETA
 		percentage := float64(result.BatchNumber) / float64(result.TotalBatches) * 100
+		eta := d.calculateETA(result.WorkerID, result.BatchNumber, result.TotalBatches)
 
 		if result.ErrorCount > 0 {
-			d.logger.Warn(fmt.Sprintf("Worker %d batch %d/%d had errors - table: %s, row_range: %s, processed: %d, errors: %d, duration: %s, progress: %.1f%%",
-				result.WorkerID, result.BatchNumber, result.TotalBatches, result.TableName, result.RowRange, result.ProcessedCount, result.ErrorCount, FormatDuration(result.Duration), percentage))
+			d.logger.Warn(fmt.Sprintf("Worker %d batch %d/%d had errors - table: %s, row_range: %s, processed: %d, errors: %d, duration: %s, progress: %.1f%%, %s",
+				result.WorkerID, result.BatchNumber, result.TotalBatches, result.TableName, result.RowRange, result.ProcessedCount, result.ErrorCount, FormatDuration(result.Duration), percentage, eta))
 		} else {
-			d.logger.Info(fmt.Sprintf("Worker %d batch %d/%d completed successfully - table: %s, row_range: %s, processed: %d, duration: %s, progress: %.1f%%",
-				result.WorkerID, result.BatchNumber, result.TotalBatches, result.TableName, result.RowRange, result.ProcessedCount, FormatDuration(result.Duration), percentage))
-			// Log sample data at debug level
+			// Log sample data at debug level first
 			if len(result.SampleData) > 0 {
 				d.logger.Debug(fmt.Sprintf("Worker %d batch %d/%d sample data - table: %s, sample_rows: %s",
 					result.WorkerID, result.BatchNumber, result.TotalBatches, result.TableName, d.formatSampleData(result.SampleData)))
 			}
+			d.logger.Info(fmt.Sprintf("Worker %d batch %d/%d completed - table: %s, row_range: %s, processed: %d, duration: %s, progress: %.1f%%, %s",
+				result.WorkerID, result.BatchNumber, result.TotalBatches, result.TableName, result.RowRange, result.ProcessedCount, FormatDuration(result.Duration), percentage, eta))
 		}
 	}
 	return totalProcessed, totalErrors
@@ -770,6 +777,62 @@ func (d *DataCleanupService) formatSampleData(sampleData []SampleRowData) string
 	}
 
 	return strings.Join(parts, ", ")
+}
+
+// recordBatchTime records a batch completion time for a worker
+func (d *DataCleanupService) recordBatchTime(workerID int, duration time.Duration) {
+	d.workerTimesMutex.Lock()
+	defer d.workerTimesMutex.Unlock()
+
+	if d.workerBatchTimes[workerID] == nil {
+		d.workerBatchTimes[workerID] = make([]time.Duration, 0)
+	}
+
+	// Keep only the last 10 batch times for moving average (avoid memory growth)
+	if len(d.workerBatchTimes[workerID]) >= 10 {
+		d.workerBatchTimes[workerID] = d.workerBatchTimes[workerID][1:]
+	}
+
+	d.workerBatchTimes[workerID] = append(d.workerBatchTimes[workerID], duration)
+}
+
+// calculateETA calculates estimated time to completion for a worker
+func (d *DataCleanupService) calculateETA(workerID int, batchNumber, totalBatches int) string {
+	d.workerTimesMutex.RLock()
+	defer d.workerTimesMutex.RUnlock()
+
+	batchTimes := d.workerBatchTimes[workerID]
+	if len(batchTimes) == 0 {
+		return "ETA: calculating..."
+	}
+
+	// Calculate average batch time for this worker
+	var totalTime time.Duration
+	for _, duration := range batchTimes {
+		totalTime += duration
+	}
+	avgBatchTime := totalTime / time.Duration(len(batchTimes))
+
+	// Estimate remaining batches (simple approximation: divide remaining batches among workers)
+	remainingBatches := totalBatches - batchNumber
+	if remainingBatches <= 0 {
+		return "ETA: complete"
+	}
+
+	// Estimate this worker will handle roughly 1/workerCount of remaining batches
+	workerCount := d.batchProcessor.workerCount
+	estimatedRemainingForWorker := (remainingBatches + workerCount - 1) / workerCount // ceiling division
+
+	estimatedTimeRemaining := avgBatchTime * time.Duration(estimatedRemainingForWorker)
+
+	return fmt.Sprintf("ETA: %s", FormatDuration(estimatedTimeRemaining))
+}
+
+// resetWorkerBatchTimes clears batch time history for all workers (called at start of table processing)
+func (d *DataCleanupService) resetWorkerBatchTimes() {
+	d.workerTimesMutex.Lock()
+	defer d.workerTimesMutex.Unlock()
+	d.workerBatchTimes = make(map[int][]time.Duration)
 }
 
 func (d *DataCleanupService) updateSingleRow(db *sql.DB, databaseName, tableName string, rowID int64, tableConfig TableUpdateConfig) error {
