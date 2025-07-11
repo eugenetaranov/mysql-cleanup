@@ -592,7 +592,7 @@ func (d *DataCleanupService) workerPK(workerID int, db *sql.DB, generator *Schem
 	}
 }
 
-// processBatchPK processes a single batch of rows using bulk UPDATE with PK(s)
+// processBatchPK processes a single batch of rows using bulk UPDATE with CASE statements
 func (d *DataCleanupService) processBatchPK(db *sql.DB, generator *SchemaAwareGofakeitGenerator, job BatchJob) (int, int) {
 	if len(job.PKValues) == 0 {
 		return 0, 0
@@ -601,12 +601,15 @@ func (d *DataCleanupService) processBatchPK(db *sql.DB, generator *SchemaAwareGo
 	d.logger.Debug(fmt.Sprintf("Worker %d batch %d starting - table: %s, row_range: %s, batch_size: %d",
 		job.WorkerID, job.BatchNumber, job.TableName, job.RowRange, len(job.PKValues)))
 
-	// Build UPDATE query for each row in batch
-	processed := 0
-	errors := 0
+	// Generate fake values for all rows in the batch first
+	type RowUpdate struct {
+		PKValues      []interface{}
+		ColumnUpdates map[string]interface{}
+	}
+
+	rowUpdates := make([]RowUpdate, 0, len(job.PKValues))
 
 	for _, pkVals := range job.PKValues {
-		// Generate fake values for all pre-validated columns for each row
 		columnUpdates := make(map[string]interface{})
 		for column, fakerType := range job.ValidColumns {
 			// Get column info from cache
@@ -621,51 +624,92 @@ func (d *DataCleanupService) processBatchPK(db *sql.DB, generator *SchemaAwareGo
 			}
 			columnUpdates[column] = fakeValue
 		}
-		if len(columnUpdates) == 0 {
-			continue // Skip row if no valid columns to update
+		if len(columnUpdates) > 0 {
+			rowUpdates = append(rowUpdates, RowUpdate{
+				PKValues:      pkVals,
+				ColumnUpdates: columnUpdates,
+			})
 		}
-
-		setParts := make([]string, 0, len(columnUpdates))
-		args := make([]interface{}, 0, len(columnUpdates)+len(pkVals))
-		for col, val := range columnUpdates {
-			setParts = append(setParts, fmt.Sprintf("`%s` = ?", col))
-			args = append(args, val)
-		}
-		// WHERE clause for PK(s)
-		whereParts := make([]string, len(job.PKCols))
-		for i, pkCol := range job.PKCols {
-			whereParts[i] = fmt.Sprintf("`%s` = ?", pkCol)
-			args = append(args, pkVals[i])
-		}
-		query := fmt.Sprintf("UPDATE `%s`.`%s` SET %s WHERE %s", job.DatabaseName, job.TableName, strings.Join(setParts, ", "), strings.Join(whereParts, " AND "))
-		_, err := db.Exec(query, args...)
-		if err != nil {
-			d.logger.Error(fmt.Sprintf("Failed to update row - table: %s, error: %s", job.TableName, err))
-			errors++
-			continue
-		}
-
-		// Log the row update in real-time
-		pkStr := ""
-		for i, pkCol := range job.PKCols {
-			if pkStr != "" {
-				pkStr += ", "
-			}
-			pkStr += fmt.Sprintf("%s:%v", pkCol, pkVals[i])
-		}
-		updateStr := ""
-		for col, val := range columnUpdates {
-			if updateStr != "" {
-				updateStr += ", "
-			}
-			updateStr += fmt.Sprintf("%s:%v", col, val)
-		}
-		d.logger.Debug(fmt.Sprintf("Worker %d batch %d updated row - %s -> %s", job.WorkerID, job.BatchNumber, pkStr, updateStr))
-
-		processed++
 	}
 
-	return processed, errors
+	if len(rowUpdates) == 0 {
+		return 0, 0
+	}
+
+	// Build INSERT ... ON DUPLICATE KEY UPDATE query (much simpler!)
+	// Get all columns (PK + update columns)
+	allColumns := make([]string, 0, len(job.PKCols)+len(job.ValidColumns))
+	allColumns = append(allColumns, job.PKCols...)
+	for column := range job.ValidColumns {
+		allColumns = append(allColumns, column)
+	}
+
+	// Build column list for INSERT
+	columnList := make([]string, len(allColumns))
+	for i, col := range allColumns {
+		columnList[i] = fmt.Sprintf("`%s`", col)
+	}
+
+	// Build VALUES clauses
+	valuesClauses := make([]string, 0, len(rowUpdates))
+	args := make([]interface{}, 0, len(rowUpdates)*len(allColumns))
+
+	for _, rowUpdate := range rowUpdates {
+		placeholders := make([]string, len(allColumns))
+
+		// Add PK values
+		for i := range job.PKCols {
+			placeholders[i] = "?"
+			args = append(args, rowUpdate.PKValues[i])
+		}
+
+		// Add update column values
+		pkColCount := len(job.PKCols)
+		for i, column := range allColumns[pkColCount:] {
+			placeholders[pkColCount+i] = "?"
+			if val, exists := rowUpdate.ColumnUpdates[column]; exists {
+				args = append(args, val)
+			} else {
+				// This shouldn't happen with our current logic, but safe fallback
+				args = append(args, nil)
+			}
+		}
+
+		valuesClauses = append(valuesClauses, fmt.Sprintf("(%s)", strings.Join(placeholders, ", ")))
+	}
+
+	// Build ON DUPLICATE KEY UPDATE clause
+	updateClauses := make([]string, 0, len(job.ValidColumns))
+	for column := range job.ValidColumns {
+		updateClauses = append(updateClauses, fmt.Sprintf("`%s` = VALUES(`%s`)", column, column))
+	}
+
+	// Build the final query
+	query := fmt.Sprintf("INSERT INTO `%s`.`%s` (%s) VALUES %s ON DUPLICATE KEY UPDATE %s",
+		job.DatabaseName, job.TableName,
+		strings.Join(columnList, ", "),
+		strings.Join(valuesClauses, ", "),
+		strings.Join(updateClauses, ", "))
+
+	// Execute the bulk update
+	result, err := db.Exec(query, args...)
+	if err != nil {
+		d.logger.Error(fmt.Sprintf("Failed to execute bulk update - table: %s, error: %s", job.TableName, err))
+		return 0, len(rowUpdates)
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	// INSERT ... ON DUPLICATE KEY UPDATE returns 2 for each updated row, 1 for each inserted row
+	// Since we're updating existing rows, divide by 2 to get actual updated count
+	actualRowsUpdated := int(rowsAffected)
+	if rowsAffected > int64(len(rowUpdates)) {
+		actualRowsUpdated = int(rowsAffected / 2)
+	}
+
+	d.logger.Debug(fmt.Sprintf("Worker %d batch %d bulk update completed - table: %s, rows_updated: %d, batch_size: %d",
+		job.WorkerID, job.BatchNumber, job.TableName, actualRowsUpdated, len(rowUpdates)))
+
+	return actualRowsUpdated, 0
 }
 
 // formatSampleData formats sample row data for debug logging

@@ -154,7 +154,8 @@ func TestFakerDataChanges(t *testing.T) {
 	}
 
 	service := createService(false, 0, 0) // Use auto-detection for workers and batch size
-	if err := service.dataCleaner.CleanupData(config); err != nil {
+	_, err = service.dataCleaner.CleanupData(config)
+	if err != nil {
 		t.Fatalf("Failed to run faker: %v", err)
 	}
 
@@ -262,7 +263,8 @@ func TestParallelWorkers(t *testing.T) {
 	}
 
 	startTime := time.Now()
-	if err := service.dataCleaner.CleanupData(config); err != nil {
+	_, err = service.dataCleaner.CleanupData(config)
+	if err != nil {
 		t.Fatalf("Failed to run parallel cleanup: %v", err)
 	}
 	duration := time.Since(startTime)
@@ -350,7 +352,8 @@ func TestLargeBatches(t *testing.T) {
 	}
 
 	startTime := time.Now()
-	if err := service.dataCleaner.CleanupData(config); err != nil {
+	_, err = service.dataCleaner.CleanupData(config)
+	if err != nil {
 		t.Fatalf("Failed to run large batch cleanup: %v", err)
 	}
 	duration := time.Since(startTime)
@@ -407,7 +410,8 @@ func TestPerformanceComparison(t *testing.T) {
 	t.Log("Testing single worker, small batch...")
 	singleWorkerService := createTestService(db, config.Workers, config.BatchSize)
 	startTime1 := time.Now()
-	if err := singleWorkerService.dataCleaner.CleanupData(config); err != nil {
+	_, err = singleWorkerService.dataCleaner.CleanupData(config)
+	if err != nil {
 		t.Fatalf("Failed to run single worker test: %v", err)
 	}
 	duration1 := time.Since(startTime1)
@@ -423,7 +427,8 @@ func TestPerformanceComparison(t *testing.T) {
 	config.BatchSize = 20
 	multiWorkerService := createTestService(db, config.Workers, config.BatchSize)
 	startTime2 := time.Now()
-	if err := multiWorkerService.dataCleaner.CleanupData(config); err != nil {
+	_, err = multiWorkerService.dataCleaner.CleanupData(config)
+	if err != nil {
 		t.Fatalf("Failed to run multi-worker cleanup: %v", err)
 	}
 	duration2 := time.Since(startTime2)
@@ -542,7 +547,8 @@ func TestErrorHandlingInParallel(t *testing.T) {
 	}
 
 	// This should not return an error, but log it internally
-	if err := service.dataCleaner.CleanupData(config); err != nil {
+	_, err = service.dataCleaner.CleanupData(config)
+	if err != nil {
 		t.Fatalf("CleanupData should not have returned an error, but got: %v", err)
 	}
 }
@@ -970,6 +976,11 @@ func (c *CustomTestConfigParser) ParseAndDisplayConfig(configPath string) error 
 	return nil
 }
 
+func (c *CustomTestConfigParser) ParseAndDisplayConfigFiltered(configPath string, config Config) error {
+	// Not needed for tests
+	return nil
+}
+
 func getRowCount(db *sql.DB, database, table string) (int, error) {
 	var count int
 	err := db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s.%s", database, table)).Scan(&count)
@@ -1032,7 +1043,8 @@ func TestEdgeCaseZeroRows(t *testing.T) {
 	}
 
 	// This should run without errors
-	if err := service.dataCleaner.CleanupData(config); err != nil {
+	_, err = service.dataCleaner.CleanupData(config)
+	if err != nil {
 		t.Fatalf("CleanupData returned an error for zero rows: %v", err)
 	}
 }
@@ -1102,7 +1114,8 @@ func TestEdgeCaseBatchLargerThanRows(t *testing.T) {
 	}
 
 	// This should run without errors
-	if err := service.dataCleaner.CleanupData(config); err != nil {
+	_, err = service.dataCleaner.CleanupData(config)
+	if err != nil {
 		t.Fatalf("CleanupData returned an error for small table: %v", err)
 	}
 }
@@ -1172,7 +1185,8 @@ func TestEdgeCaseBatchSizeOne(t *testing.T) {
 	}
 
 	// This should run without errors
-	if err := service.dataCleaner.CleanupData(config); err != nil {
+	_, err = service.dataCleaner.CleanupData(config)
+	if err != nil {
 		t.Fatalf("CleanupData returned an error for batch size one: %v", err)
 	}
 }
@@ -1256,7 +1270,8 @@ func TestNonIdPrimaryKey(t *testing.T) {
 	}
 
 	// This should run without errors
-	if err := service.dataCleaner.CleanupData(config); err != nil {
+	_, err = service.dataCleaner.CleanupData(config)
+	if err != nil {
 		t.Fatalf("CleanupData returned an error for non-ID PK table: %v", err)
 	}
 
@@ -1365,7 +1380,8 @@ func TestCompositePrimaryKey(t *testing.T) {
 	}
 
 	// This should run without errors
-	if err := service.dataCleaner.CleanupData(config); err != nil {
+	_, err = service.dataCleaner.CleanupData(config)
+	if err != nil {
 		t.Fatalf("CleanupData returned an error for composite PK table: %v", err)
 	}
 
