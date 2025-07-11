@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	"math/rand"
+
 	"github.com/brianvoe/gofakeit/v6"
 	_ "github.com/go-sql-driver/mysql"
 	"go.uber.org/zap"
@@ -19,16 +21,21 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
+// init seeds the random number generator to ensure unique fake data generation
+func init() {
+	rand.Seed(time.Now().UnixNano())
+}
+
 // MySQLConnector implements DatabaseConnector
 type MySQLConnector struct{}
 
 func (m *MySQLConnector) Connect(config Config) (*sql.DB, error) {
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true", 
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true",
 		config.User, config.Password, config.Host, config.Port, config.DB)
 	// Note: We can't log the full DSN as it contains the password
 	log.Printf("Connecting to MySQL database: %s@%s:%s/%s", config.User, config.Host, config.Port, config.DB)
 	log.Printf("[DEBUG] DSN: %s:****@tcp(%s:%s)/%s?parseTime=true (config.DB=%q)", config.User, config.Host, config.Port, config.DB, config.DB)
-	
+
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
@@ -81,7 +88,7 @@ func (y *YAMLConfigParser) ParseConfig(configPath string) (*YAMLConfig, error) {
 		defer cleanup()
 		y.logger.Info("Downloaded S3 config to local file", String("local_path", localPath))
 	}
-	
+
 	y.logger.Debug("Reading config file", String("path", configPath))
 	data, err := y.fileReader.ReadFile(configPath)
 	if err != nil {
@@ -111,7 +118,7 @@ func (y *YAMLConfigParser) ParseAndDisplayConfig(configPath string) error {
 func (y *YAMLConfigParser) displayConfig(config YAMLConfig) {
 	for dbName, dbConfig := range config.Databases {
 		y.logger.Debug("Database configuration", String("database", dbName), String("truncate_tables", fmt.Sprintf("%v", dbConfig.Truncate)))
-		
+
 		if len(dbConfig.Update) > 0 {
 			y.logger.Debug("Update tables configuration", String("database", dbName), Int("update_table_count", len(dbConfig.Update)))
 			for tableName, tableConfig := range dbConfig.Update {
@@ -168,28 +175,31 @@ func NewBatchProcessor(logger Logger, workers, batchSize int) *BatchProcessor {
 
 // DataCleanupService implements DataCleaner
 type DataCleanupService struct {
-	dbConnector    DatabaseConnector
-	configParser   ConfigParser
-	fakeGenerator  FakeDataGenerator
+	dbConnector          DatabaseConnector
+	configParser         ConfigParser
+	fakeGenerator        FakeDataGenerator
 	schemaAwareGenerator SchemaAwareFakeDataGenerator
-	logger         Logger
-	batchProcessor *BatchProcessor
+	logger               Logger
+	batchProcessor       *BatchProcessor
+	columnInfoCache      map[string]map[string]*ColumnInfo
+	cacheMutex           sync.RWMutex
 }
 
 func NewDataCleanupService(dbConnector DatabaseConnector, configParser ConfigParser, fakeGenerator FakeDataGenerator, schemaAwareGenerator SchemaAwareFakeDataGenerator, logger Logger, workers, batchSize int) *DataCleanupService {
 	return &DataCleanupService{
-		dbConnector:    dbConnector,
-		configParser:   configParser,
-		fakeGenerator:  fakeGenerator,
+		dbConnector:          dbConnector,
+		configParser:         configParser,
+		fakeGenerator:        fakeGenerator,
 		schemaAwareGenerator: schemaAwareGenerator,
-		logger:         logger,
-		batchProcessor: NewBatchProcessor(logger, workers, batchSize),
+		logger:               logger,
+		batchProcessor:       NewBatchProcessor(logger, workers, batchSize),
+		columnInfoCache:      make(map[string]map[string]*ColumnInfo),
 	}
 }
 
 func (d *DataCleanupService) CleanupData(config Config) error {
 	d.logger.Debug("Starting data cleanup", String("database", config.DB), String("table", config.Table), String("all_tables", fmt.Sprintf("%t", config.AllTables)))
-	
+
 	// Parse the YAML configuration
 	yamlConfig, err := d.configParser.ParseConfig(config.Config)
 	if err != nil {
@@ -280,12 +290,12 @@ func (d *DataCleanupService) TruncateTables(db *sql.DB, tables []string) error {
 func (d *DataCleanupService) UpdateTables(db *sql.DB, databaseName string, tableConfigs map[string]TableUpdateConfig) error {
 	for tableName, tableConfig := range tableConfigs {
 		d.logger.Debug("Updating table", String("table", tableName))
-		
+
 		if err := d.UpdateTableData(db, databaseName, tableName, tableConfig); err != nil {
 			d.logger.Error("Failed to update table", String("table", tableName), Error("error", err))
 			return fmt.Errorf("failed to update table %s: %w", tableName, err)
 		}
-		
+
 		d.logger.Debug("Successfully updated table", String("table", tableName))
 	}
 	return nil
@@ -302,26 +312,44 @@ func (d *DataCleanupService) UpdateTableData(db *sql.DB, databaseName, tableName
 		return fmt.Errorf("failed to discover primary key: %w", err)
 	}
 
-	// Pre-check all columns exist before starting parallel processing
-	validColumns := make(map[string]string) // column -> fakerType
-	for column, fakerType := range tableConfig.Columns {
-		exists, err := d.columnExists(db, databaseName, tableName, column)
+	// Pre-cache column info to avoid concurrent map access issues
+	d.cacheMutex.Lock()
+	if _, exists := d.columnInfoCache[tableName]; !exists {
+		d.columnInfoCache[tableName] = make(map[string]*ColumnInfo)
+	}
+	d.cacheMutex.Unlock()
+
+	for columnName := range tableConfig.Columns {
+		info, err := d.schemaAwareGenerator.GetColumnInfo(databaseName, tableName, columnName, db)
 		if err != nil {
-			d.logger.Warn("Failed to check column", String("table", tableName), String("column", column), Error("error", err))
+			d.logger.Warn("Failed to pre-cache column info", String("table", tableName), String("column", columnName), Error("error", err))
+			continue
+		}
+		d.cacheMutex.Lock()
+		d.columnInfoCache[tableName][columnName] = info
+		d.cacheMutex.Unlock()
+	}
+
+	// Validate columns before starting the parallel processing
+	validColumns := make(map[string]string)
+	for col, fakerType := range tableConfig.Columns {
+		exists, err := d.columnExists(db, databaseName, tableName, col)
+		if err != nil {
+			d.logger.Warn("Failed to check column", String("table", tableName), String("column", col), Error("error", err))
 			continue
 		}
 		if !exists {
-			d.logger.Warn("Column does not exist, skipping", String("table", tableName), String("column", column))
+			d.logger.Warn("Column does not exist, skipping", String("table", tableName), String("column", col))
 			continue
 		}
-		validColumns[column] = fakerType
+		validColumns[col] = fakerType
 	}
-	
+
 	if len(validColumns) == 0 {
 		d.logger.Warn("No valid columns found for update", String("table", tableName))
 		return nil
 	}
-	
+
 	d.logger.Debug("Pre-validated columns", String("table", tableName), Int("valid_columns", len(validColumns)))
 
 	whereClause := ""
@@ -370,8 +398,8 @@ func (d *DataCleanupService) UpdateTableData(db *sql.DB, databaseName, tableName
 	// Process rows in parallel batches
 	totalProcessed, totalErrors := d.processBatchesInParallelPK(db, databaseName, tableName, pkCols, pkValues, tableConfig, validColumns)
 	duration := time.Since(startTime)
-	d.logger.Debug("Parallel batch processing completed", 
-		String("table", tableName), 
+	d.logger.Debug("Parallel batch processing completed",
+		String("table", tableName),
 		Int("total_rows", len(pkValues)),
 		Int("processed", totalProcessed),
 		Int("errors", totalErrors),
@@ -392,22 +420,30 @@ func (d *DataCleanupService) processBatchesInParallelPK(db *sql.DB, databaseName
 	var wg sync.WaitGroup
 	for i := 0; i < d.batchProcessor.workerCount; i++ {
 		wg.Add(1)
-		go d.workerPK(i, db, jobChan, resultChan, &wg)
+		// Each worker gets its own schema-aware generator with a truly unique seed
+		// Combine multiple factors to ensure unique seeds: time + worker ID + random component
+		uniqueSeed := time.Now().UnixNano() + int64(i*1000000) + rand.Int63()
+		workerGenerator := NewSchemaAwareGofakeitGenerator(d.logger)
+		workerGenerator.faker = gofakeit.New(uniqueSeed)
+		go d.workerPK(i, db, workerGenerator, jobChan, resultChan, &wg)
+
+		// Small delay to ensure different timestamps for each worker
+		time.Sleep(time.Microsecond)
 	}
 
-			go func() {
-			defer close(jobChan)
-			for _, batch := range batches {
-				jobChan <- BatchJob{
-					DatabaseName: databaseName,
-					TableName:    tableName,
-					PKCols:       pkCols,
-					PKValues:     batch,
-					TableConfig:  tableConfig,
-					ValidColumns: validColumns,
-				}
+	go func() {
+		defer close(jobChan)
+		for _, batch := range batches {
+			jobChan <- BatchJob{
+				DatabaseName: databaseName,
+				TableName:    tableName,
+				PKCols:       pkCols,
+				PKValues:     batch,
+				TableConfig:  tableConfig,
+				ValidColumns: validColumns,
 			}
-		}()
+		}
+	}()
 
 	go func() {
 		wg.Wait()
@@ -442,11 +478,11 @@ func (d *DataCleanupService) createBatchesPK(pkValues [][]interface{}, batchSize
 }
 
 // workerPK processes PK-aware batch jobs
-func (d *DataCleanupService) workerPK(workerID int, db *sql.DB, jobChan <-chan BatchJob, resultChan chan<- BatchResult, wg *sync.WaitGroup) {
+func (d *DataCleanupService) workerPK(workerID int, db *sql.DB, generator *SchemaAwareGofakeitGenerator, jobChan <-chan BatchJob, resultChan chan<- BatchResult, wg *sync.WaitGroup) {
 	defer wg.Done()
 	for job := range jobChan {
 		startTime := time.Now()
-		processed, errors := d.processBatchPK(db, job)
+		processed, errors := d.processBatchPK(db, generator, job)
 		duration := time.Since(startTime)
 		resultChan <- BatchResult{
 			BatchJob:       job,
@@ -457,25 +493,9 @@ func (d *DataCleanupService) workerPK(workerID int, db *sql.DB, jobChan <-chan B
 	}
 }
 
-
-
 // processBatchPK processes a single batch of rows using bulk UPDATE with PK(s)
-func (d *DataCleanupService) processBatchPK(db *sql.DB, job BatchJob) (int, int) {
+func (d *DataCleanupService) processBatchPK(db *sql.DB, generator *SchemaAwareGofakeitGenerator, job BatchJob) (int, int) {
 	if len(job.PKValues) == 0 {
-		return 0, 0
-	}
-
-	// Generate fake values for all pre-validated columns once (reuse for all rows in batch)
-	columnUpdates := make(map[string]interface{})
-	for column, fakerType := range job.ValidColumns {
-		fakeValue, err := d.schemaAwareGenerator.GenerateFakeValue(fakerType, job.DatabaseName, job.TableName, column, db)
-		if err != nil {
-			d.logger.Warn("Failed to generate fake value", String("table", job.TableName), String("column", column), String("faker_type", fakerType), Error("error", err))
-			continue
-		}
-		columnUpdates[column] = fakeValue
-	}
-	if len(columnUpdates) == 0 {
 		return 0, 0
 	}
 
@@ -483,6 +503,25 @@ func (d *DataCleanupService) processBatchPK(db *sql.DB, job BatchJob) (int, int)
 	processed := 0
 	errors := 0
 	for _, pkVals := range job.PKValues {
+		// Generate fake values for all pre-validated columns for each row
+		columnUpdates := make(map[string]interface{})
+		for column, fakerType := range job.ValidColumns {
+			// Get column info from cache
+			d.cacheMutex.RLock()
+			info := d.columnInfoCache[job.TableName][column]
+			d.cacheMutex.RUnlock()
+
+			fakeValue, err := generator.GenerateFakeValue(fakerType, info)
+			if err != nil {
+				d.logger.Warn("Failed to generate fake value", String("table", job.TableName), String("column", column), String("faker_type", fakerType), Error("error", err))
+				continue
+			}
+			columnUpdates[column] = fakeValue
+		}
+		if len(columnUpdates) == 0 {
+			continue // Skip row if no valid columns to update
+		}
+
 		setParts := make([]string, 0, len(columnUpdates))
 		args := make([]interface{}, 0, len(columnUpdates)+len(pkVals))
 		for col, val := range columnUpdates {
@@ -506,8 +545,6 @@ func (d *DataCleanupService) processBatchPK(db *sql.DB, job BatchJob) (int, int)
 	}
 	return processed, errors
 }
-
-
 
 func (d *DataCleanupService) updateSingleRow(db *sql.DB, databaseName, tableName string, rowID int64, tableConfig TableUpdateConfig) error {
 	d.logger.Debug("Updating single row", String("table", tableName), Int64("row_id", rowID), Int("column_count", len(tableConfig.Columns)))
@@ -537,9 +574,13 @@ func (d *DataCleanupService) updateSingleRow(db *sql.DB, databaseName, tableName
 			continue
 		}
 
-		fakeValue, err := d.schemaAwareGenerator.GenerateFakeValue(fakerType, databaseName, tableName, column, db)
+		d.cacheMutex.RLock()
+		info := d.columnInfoCache[tableName][column]
+		d.cacheMutex.RUnlock()
+
+		fakeValue, err := d.schemaAwareGenerator.GenerateFakeValue(fakerType, info)
 		if err != nil {
-			d.logger.Warn("Failed to generate fake value", String("table", tableName), String("column", column), String("faker_type", fakerType), Error("error", err))
+			d.logger.Warn("Failed to generate fake value for single row update", String("table", tableName), String("column", column), String("faker_type", fakerType), Error("error", err))
 			continue
 		}
 		updates = append(updates, fmt.Sprintf("`%s` = ?", column))
@@ -579,13 +620,13 @@ func (d *DataCleanupService) columnExists(db *sql.DB, databaseName, tableName, c
 		AND TABLE_NAME = ? 
 		AND COLUMN_NAME = ?
 	`
-	
+
 	var count int
 	err := db.QueryRow(query, databaseName, tableName, columnName).Scan(&count)
 	if err != nil {
 		return false, fmt.Errorf("failed to check column %s in table %s: %w", columnName, tableName, err)
 	}
-	
+
 	return count > 0, nil
 }
 
@@ -624,16 +665,30 @@ func getPrimaryKeyColumns(db *sql.DB, databaseName, tableName string, logger Log
 }
 
 // GofakeitGenerator implements FakeDataGenerator
-type GofakeitGenerator struct{}
+type GofakeitGenerator struct {
+	faker *gofakeit.Faker
+}
+
+func NewGofakeitGenerator() *GofakeitGenerator {
+	// Use a combination of time and random for more robust seeding
+	seed := time.Now().UnixNano() + rand.Int63()
+	return &GofakeitGenerator{
+		faker: gofakeit.New(seed),
+	}
+}
 
 // SchemaAwareGofakeitGenerator implements SchemaAwareFakeDataGenerator
 type SchemaAwareGofakeitGenerator struct {
 	logger Logger
+	faker  *gofakeit.Faker
 }
 
 func NewSchemaAwareGofakeitGenerator(logger Logger) *SchemaAwareGofakeitGenerator {
+	// Use a combination of time and random for more robust seeding
+	seed := time.Now().UnixNano() + rand.Int63()
 	return &SchemaAwareGofakeitGenerator{
 		logger: logger,
+		faker:  gofakeit.New(seed),
 	}
 }
 
@@ -649,128 +704,113 @@ func (g *SchemaAwareGofakeitGenerator) GetColumnInfo(databaseName, tableName, co
 		AND TABLE_NAME = ? 
 		AND COLUMN_NAME = ?
 	`
-	
+
 	var dataType, isNullable string
 	var maxLength sql.NullInt64
 	var defaultValue sql.NullString
-	
+
 	err := db.QueryRow(query, databaseName, tableName, columnName).Scan(&dataType, &maxLength, &isNullable, &defaultValue)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get column info for %s.%s: %w", tableName, columnName, err)
 	}
-	
+
 	columnInfo := &ColumnInfo{
 		DataType:   dataType,
 		IsNullable: isNullable == "YES",
 	}
-	
+
 	if maxLength.Valid {
 		maxLen := int(maxLength.Int64)
 		columnInfo.MaxLength = &maxLen
 	}
-	
+
 	if defaultValue.Valid {
 		columnInfo.DefaultValue = &defaultValue.String
 	}
-	
-	g.logger.Debug("Retrieved column info", 
-		String("table", tableName), 
-		String("column", columnName), 
+
+	g.logger.Debug("Retrieved column info",
+		String("table", tableName),
+		String("column", columnName),
 		String("data_type", dataType),
 		Any("max_length", columnInfo.MaxLength),
 		Bool("is_nullable", columnInfo.IsNullable))
-	
+
 	return columnInfo, nil
 }
 
-func (g *SchemaAwareGofakeitGenerator) GenerateFakeValue(fakerType string, databaseName, tableName, columnName string, db *sql.DB) (interface{}, error) {
-	g.logger.Debug("Generating schema-aware fake value", 
-		String("faker_type", fakerType), 
-		String("table", tableName), 
-		String("column", columnName))
-	
-	// Get column information
-	columnInfo, err := g.GetColumnInfo(databaseName, tableName, columnName, db)
-	if err != nil {
-		g.logger.Warn("Failed to get column info, falling back to basic generation", 
-			String("table", tableName), 
-			String("column", columnName), 
-			Error("error", err))
-		// Fall back to basic generation without schema awareness
-		return g.generateBasicFakeValue(fakerType)
-	}
-	
-	// Generate the basic fake value
+func (g *SchemaAwareGofakeitGenerator) GenerateFakeValue(fakerType string, info *ColumnInfo) (interface{}, error) {
+	// Generate a value with the basic generator
 	value, err := g.generateBasicFakeValue(fakerType)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Truncate the value if it's a string and has a max length constraint
-	if strValue, ok := value.(string); ok && columnInfo.MaxLength != nil {
-		if len(strValue) > *columnInfo.MaxLength {
-			g.logger.Debug("Truncating string value", 
-				String("table", tableName), 
-				String("column", columnName), 
-				Int("original_length", len(strValue)), 
-				Int("max_length", *columnInfo.MaxLength))
-			value = strValue[:*columnInfo.MaxLength]
+	if strValue, ok := value.(string); ok && info.MaxLength != nil {
+		if len(strValue) > *info.MaxLength {
+			g.logger.Debug("Truncating string value",
+				Int("original_length", len(strValue)),
+				Int("max_length", *info.MaxLength))
+			value = strValue[:*info.MaxLength]
 		}
 	}
-	
+
 	return value, nil
 }
 
 func (g *SchemaAwareGofakeitGenerator) generateBasicFakeValue(fakerType string) (interface{}, error) {
 	// Note: We can't use structured logging here as this generator doesn't have a logger
 	log.Printf("[DEBUG] Generating fake value for type: %s", fakerType)
-	
+
 	switch fakerType {
 	case "random_email":
-		// Use gofakeit.Email() for realism, but add a short random number to the username for uniqueness
-		email := gofakeit.Email()
-		parts := strings.Split(email, "@")
+		// Generate a more unique email with multiple random components
+		baseEmail := g.faker.Email()
+		parts := strings.Split(baseEmail, "@")
 		if len(parts) == 2 {
-			suffix := gofakeit.Number(10, 99) // 2-digit random number
-			return fmt.Sprintf("%s%d@%s", parts[0], suffix, parts[1]), nil
+			// Add multiple sources of randomness for uniqueness
+			suffix1 := g.faker.Number(10, 99)             // 2-digit random number
+			suffix2 := g.faker.Number(100, 999)           // 3-digit random number
+			timeComponent := time.Now().UnixNano() % 1000 // Time-based component
+			return fmt.Sprintf("%s%d%d%d@%s", parts[0], suffix1, suffix2, timeComponent, parts[1]), nil
 		}
-		return email, nil
+		return baseEmail, nil
 	case "random_name":
-		return gofakeit.Name(), nil
+		return g.faker.Name(), nil
 	case "random_firstname":
-		return gofakeit.FirstName(), nil
+		return g.faker.FirstName(), nil
 	case "random_lastname":
-		return gofakeit.LastName(), nil
+		return g.faker.LastName(), nil
 	case "random_company":
-		return gofakeit.Company(), nil
+		return g.faker.Company(), nil
 	case "random_address":
-		return gofakeit.Street(), nil
+		return g.faker.Street(), nil
 	case "random_city":
-		return gofakeit.City(), nil
+		return g.faker.City(), nil
 	case "random_state":
-		return gofakeit.StateAbr(), nil
+		return g.faker.StateAbr(), nil
 	case "random_country_code":
-		return gofakeit.CountryAbr(), nil
+		return g.faker.CountryAbr(), nil
 	case "random_postalcode":
-		return gofakeit.Zip(), nil
+		return g.faker.Zip(), nil
 	case "random_phone_short":
-		return gofakeit.Phone(), nil
+		return g.faker.Phone(), nil
 	case "random_username":
-		return gofakeit.Username(), nil
+		return g.faker.Username(), nil
 	case "random_id":
-		return gofakeit.UUID(), nil
+		return g.faker.UUID(), nil
 	case "random_text":
-		return gofakeit.Sentence(10), nil
+		return g.faker.Sentence(10), nil
 	case "random_word":
-		return gofakeit.Word(), nil
+		return g.faker.Word(), nil
 	case "random_email_subject":
-		return gofakeit.Sentence(6), nil
+		return g.faker.Sentence(6), nil
 	case "random_file_name":
-		return gofakeit.Word() + gofakeit.FileExtension(), nil
+		return g.faker.Word() + g.faker.FileExtension(), nil
 	case "random_number_txt":
-		return fmt.Sprintf("%d", gofakeit.Number(1, 9999)), nil
+		return fmt.Sprintf("%d", g.faker.Number(1, 9999)), nil
 	case "random_room_number_txt":
-		return fmt.Sprintf("%d", gofakeit.Number(1, 255)), nil
+		return fmt.Sprintf("%d", g.faker.Number(1, 255)), nil
 	default:
 		if fakerType == "" {
 			return nil, nil // Empty string means don't update this column
@@ -786,53 +826,56 @@ func (g *SchemaAwareGofakeitGenerator) generateBasicFakeValue(fakerType string) 
 func (g *GofakeitGenerator) GenerateFakeValue(fakerType string) (interface{}, error) {
 	// Note: We can't use structured logging here as this generator doesn't have a logger
 	log.Printf("[DEBUG] Generating fake value for type: %s", fakerType)
-	
+
 	switch fakerType {
 	case "random_email":
-		// Use gofakeit.Email() for realism, but add a short random number to the username for uniqueness
-		email := gofakeit.Email()
-		parts := strings.Split(email, "@")
+		// Generate a more unique email with multiple random components
+		baseEmail := g.faker.Email()
+		parts := strings.Split(baseEmail, "@")
 		if len(parts) == 2 {
-			suffix := gofakeit.Number(10, 99) // 2-digit random number
-			return fmt.Sprintf("%s%d@%s", parts[0], suffix, parts[1]), nil
+			// Add multiple sources of randomness for uniqueness
+			suffix1 := g.faker.Number(10, 99)             // 2-digit random number
+			suffix2 := g.faker.Number(100, 999)           // 3-digit random number
+			timeComponent := time.Now().UnixNano() % 1000 // Time-based component
+			return fmt.Sprintf("%s%d%d%d@%s", parts[0], suffix1, suffix2, timeComponent, parts[1]), nil
 		}
-		return email, nil
+		return baseEmail, nil
 	case "random_name":
-		return gofakeit.Name(), nil
+		return g.faker.Name(), nil
 	case "random_firstname":
-		return gofakeit.FirstName(), nil
+		return g.faker.FirstName(), nil
 	case "random_lastname":
-		return gofakeit.LastName(), nil
+		return g.faker.LastName(), nil
 	case "random_company":
-		return gofakeit.Company(), nil
+		return g.faker.Company(), nil
 	case "random_address":
-		return gofakeit.Street(), nil
+		return g.faker.Street(), nil
 	case "random_city":
-		return gofakeit.City(), nil
+		return g.faker.City(), nil
 	case "random_state":
-		return gofakeit.StateAbr(), nil
+		return g.faker.StateAbr(), nil
 	case "random_country_code":
-		return gofakeit.CountryAbr(), nil
+		return g.faker.CountryAbr(), nil
 	case "random_postalcode":
-		return gofakeit.Zip(), nil
+		return g.faker.Zip(), nil
 	case "random_phone_short":
-		return gofakeit.Phone(), nil
+		return g.faker.Phone(), nil
 	case "random_username":
-		return gofakeit.Username(), nil
+		return g.faker.Username(), nil
 	case "random_id":
-		return gofakeit.UUID(), nil
+		return g.faker.UUID(), nil
 	case "random_text":
-		return gofakeit.Sentence(10), nil
+		return g.faker.Sentence(10), nil
 	case "random_word":
-		return gofakeit.Word(), nil
+		return g.faker.Word(), nil
 	case "random_email_subject":
-		return gofakeit.Sentence(6), nil
+		return g.faker.Sentence(6), nil
 	case "random_file_name":
-		return gofakeit.Word() + gofakeit.FileExtension(), nil
+		return g.faker.Word() + g.faker.FileExtension(), nil
 	case "random_number_txt":
-		return fmt.Sprintf("%d", gofakeit.Number(1000, 9999)), nil
+		return fmt.Sprintf("%d", g.faker.Number(1000, 9999)), nil
 	case "random_room_number_txt":
-		return fmt.Sprintf("%d", gofakeit.Number(100, 999)), nil
+		return fmt.Sprintf("%d", g.faker.Number(100, 999)), nil
 	default:
 		if fakerType == "" {
 			return nil, nil // Empty string means don't update this column
@@ -860,17 +903,17 @@ type ZapLogger struct {
 func NewZapLogger(debug bool) *ZapLogger {
 	// Create a development logger with caller info and stack traces
 	config := zap.NewDevelopmentConfig()
-	
+
 	// Set log level based on debug flag
 	if debug {
 		config.Level = zap.NewAtomicLevelAt(zap.DebugLevel) // Enable debug level
 	} else {
 		config.Level = zap.NewAtomicLevelAt(zap.InfoLevel) // Only info and above
 	}
-	
+
 	config.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
 	config.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
-	
+
 	// Custom caller encoder to show relative paths from repo root
 	config.EncoderConfig.EncodeCaller = func(caller zapcore.EntryCaller, enc zapcore.PrimitiveArrayEncoder) {
 		// Get the current working directory to make paths relative
@@ -880,18 +923,18 @@ func NewZapLogger(debug bool) *ZapLogger {
 			enc.AppendString(caller.TrimmedPath())
 			return
 		}
-		
+
 		// Make the path relative to working directory
 		relPath := strings.TrimPrefix(caller.FullPath(), wd+"/")
 		if relPath == caller.FullPath() {
 			// If trimming didn't work, fall back to just the filename
 			relPath = filepath.Base(caller.FullPath())
 		}
-		
+
 		// Format as "filename:line"
 		enc.AppendString(fmt.Sprintf("%s:%d", relPath, caller.Line))
 	}
-	
+
 	logger, err := config.Build()
 	if err != nil {
 		// Fallback to standard logger if zap fails
@@ -899,7 +942,7 @@ func NewZapLogger(debug bool) *ZapLogger {
 		log.Printf("Failed to create zap logger: %v, falling back to std logger", err)
 		return &ZapLogger{logger: zap.NewNop()}
 	}
-	
+
 	return &ZapLogger{logger: logger}
 }
 
@@ -1046,6 +1089,4 @@ func (m *MySQLTableFetcher) FetchAndDisplayTableData(config Config) error {
 	}
 
 	return nil
-} 
-
- 
+}

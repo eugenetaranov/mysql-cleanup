@@ -1,3 +1,4 @@
+USE acme_corp;
 -- Sample data for database tables
 -- Account users
 INSERT INTO account_user (email, created_at) VALUES
@@ -79,7 +80,7 @@ INSERT INTO report_attachment (email_body, sender_address, subject, recipient_ad
 
 -- Bookings
 INSERT INTO booking (address, num_adults, num_children, organization, email, end_time, first_name, last_name, group_label, 
-                    phone_main, phone_mobile, phone_home, phone_work, booking_reference, room_id, start_time) VALUES
+                     phone_main, phone_mobile, phone_home, phone_work, booking_reference, room_id, start_time) VALUES
 ('123 Main St, City1, ST 12345', 2, 0, 'ABC Corp', 'booking1@example.com', '2024-02-15 12:00:00', 'John', 'Smith', 'Business', 
  '+1-555-2001', '+1-555-2002', '+1-555-2003', '+1-555-2004', 'BK001', 'RM101', '2024-02-10 14:00:00'),
 ('456 Oak Ave, City2, ST 23456', 2, 2, 'Family Trip', 'booking2@example.com', '2024-02-20 11:00:00', 'Mary', 'Johnson', 'Family', 
@@ -190,12 +191,12 @@ INSERT INTO escalation_policy (phone, emails, is_disabled) VALUES
 ('+1-555-5002', 'escalation2@example.com,backup2@example.com', true),
 ('+1-555-5003', 'escalation3@example.com', false),
 ('+1-555-5004', 'escalation4@example.com,backup4@example.com', false),
-('+1-555-5005', 'escalation5@example.com', true),
-('+1-555-5006', 'escalation6@example.com,backup6@example.com', false),
-('+1-555-5007', 'escalation7@example.com', false),
-('+1-555-5008', 'escalation8@example.com,backup8@example.com', true),
-('+1-555-5009', 'escalation9@example.com', false),
-('+1-555-5010', 'escalation10@example.com,backup10@example.com', false);
+('’+1-555-5005', 'escalation5@example.com', true),
+('’+1-555-5006', 'escalation6@example.com,backup6@example.com', false),
+('’+1-555-5007', 'escalation7@example.com', false),
+('’+1-555-5008', 'escalation8@example.com,backup8@example.com', true),
+('’+1-555-5009', 'escalation9@example.com', false),
+('’+1-555-5010', 'escalation10@example.com,backup10@example.com', false);
 
 -- Custom field values
 INSERT INTO custom_field_value (value) VALUES

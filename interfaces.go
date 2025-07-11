@@ -30,17 +30,17 @@ type FakeDataGenerator interface {
 	GenerateFakeValue(fakerType string) (interface{}, error)
 }
 
-// SchemaAwareFakeDataGenerator interface for generating fake data with schema awareness
+// SchemaAwareFakeDataGenerator generates fake data based on database schema
 type SchemaAwareFakeDataGenerator interface {
-	GenerateFakeValue(fakerType string, databaseName, tableName, columnName string, db *sql.DB) (interface{}, error)
 	GetColumnInfo(databaseName, tableName, columnName string, db *sql.DB) (*ColumnInfo, error)
+	GenerateFakeValue(fakerType string, columnInfo *ColumnInfo) (interface{}, error)
 }
 
 // ColumnInfo represents database column metadata
 type ColumnInfo struct {
-	DataType    string
-	MaxLength   *int
-	IsNullable  bool
+	DataType     string
+	MaxLength    *int
+	IsNullable   bool
 	DefaultValue *string
 }
 
@@ -104,11 +104,11 @@ type S3Handler interface {
 
 // Service struct that holds all dependencies
 type Service struct {
-	dbConnector     DatabaseConnector
-	configParser    ConfigParser
-	dataCleaner     DataCleaner
-	fakeGenerator   FakeDataGenerator
-	fileReader      FileReader
-	logger          Logger
-	tableFetcher    TableDataFetcher
-} 
+	dbConnector   DatabaseConnector
+	configParser  ConfigParser
+	dataCleaner   DataCleaner
+	fakeGenerator FakeDataGenerator
+	fileReader    FileReader
+	logger        Logger
+	tableFetcher  TableDataFetcher
+}

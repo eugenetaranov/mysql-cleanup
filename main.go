@@ -30,7 +30,7 @@ func createService(debug bool, workers, batchSize int) *Service {
 	logger := NewZapLogger(debug) // Use zap logger with debug flag
 	s3Handler := NewS3Handler(logger)
 	configParser := NewYAMLConfigParser(fileReader, s3Handler, logger)
-	fakeGenerator := &GofakeitGenerator{}
+	fakeGenerator := NewGofakeitGenerator() // Use constructor instead of &GofakeitGenerator{}
 	schemaAwareGenerator := NewSchemaAwareGofakeitGenerator(logger)
 	dataCleaner := NewDataCleanupService(dbConnector, configParser, fakeGenerator, schemaAwareGenerator, logger, workers, batchSize)
 	tableFetcher := NewMySQLTableFetcher(dbConnector, logger)
@@ -82,7 +82,7 @@ func main() {
 	// Output the provided arguments
 	service.logger.Debug("MySQL Cleanup CLI")
 	service.logger.Debug("==================")
-	service.logger.Debug("Configuration", 
+	service.logger.Debug("Configuration",
 		String("host", config.Host),
 		String("user", config.User),
 		String("port", config.Port),
