@@ -191,6 +191,7 @@ type BatchJob struct {
 	TableConfig  TableUpdateConfig
 	ValidColumns map[string]string // Pre-validated columns: column -> fakerType
 	BatchNumber  int               // Batch number (1, 2, 3, etc.)
+	TotalBatches int               // Total number of batches for percentage calculation
 	WorkerID     int               // Worker ID that will process this batch
 	RowRange     string            // Row range like "1-3" or "4-6"
 }
@@ -532,6 +533,7 @@ func (d *DataCleanupService) processBatchesInParallelPK(db *sql.DB, databaseName
 				TableConfig:  tableConfig,
 				ValidColumns: validColumns,
 				BatchNumber:  batchIndex + 1, // 1-based batch numbering
+				TotalBatches: len(batches),   // Total number of batches for percentage calculation
 				WorkerID:     -1,             // Will be set by worker
 				RowRange:     rowRange,
 			}
@@ -549,16 +551,19 @@ func (d *DataCleanupService) processBatchesInParallelPK(db *sql.DB, databaseName
 		totalProcessed += result.ProcessedCount
 		totalErrors += result.ErrorCount
 
+		// Calculate percentage completion
+		percentage := float64(result.BatchNumber) / float64(result.TotalBatches) * 100
+
 		if result.ErrorCount > 0 {
-			d.logger.Warn(fmt.Sprintf("Worker %d batch %d had errors - table: %s, row_range: %s, processed: %d, errors: %d, duration: %s",
-				result.WorkerID, result.BatchNumber, result.TableName, result.RowRange, result.ProcessedCount, result.ErrorCount, FormatDuration(result.Duration)))
+			d.logger.Warn(fmt.Sprintf("Worker %d batch %d/%d had errors - table: %s, row_range: %s, processed: %d, errors: %d, duration: %s, progress: %.1f%%",
+				result.WorkerID, result.BatchNumber, result.TotalBatches, result.TableName, result.RowRange, result.ProcessedCount, result.ErrorCount, FormatDuration(result.Duration), percentage))
 		} else {
-			d.logger.Info(fmt.Sprintf("Worker %d batch %d completed successfully - table: %s, row_range: %s, processed: %d, duration: %s",
-				result.WorkerID, result.BatchNumber, result.TableName, result.RowRange, result.ProcessedCount, FormatDuration(result.Duration)))
+			d.logger.Info(fmt.Sprintf("Worker %d batch %d/%d completed successfully - table: %s, row_range: %s, processed: %d, duration: %s, progress: %.1f%%",
+				result.WorkerID, result.BatchNumber, result.TotalBatches, result.TableName, result.RowRange, result.ProcessedCount, FormatDuration(result.Duration), percentage))
 			// Log sample data at debug level
 			if len(result.SampleData) > 0 {
-				d.logger.Debug(fmt.Sprintf("Worker %d batch %d sample data - table: %s, sample_rows: %s",
-					result.WorkerID, result.BatchNumber, result.TableName, d.formatSampleData(result.SampleData)))
+				d.logger.Debug(fmt.Sprintf("Worker %d batch %d/%d sample data - table: %s, sample_rows: %s",
+					result.WorkerID, result.BatchNumber, result.TotalBatches, result.TableName, d.formatSampleData(result.SampleData)))
 			}
 		}
 	}
@@ -604,8 +609,8 @@ func (d *DataCleanupService) processBatchPK(db *sql.DB, generator *SchemaAwareGo
 		return 0, 0, nil
 	}
 
-	d.logger.Info(fmt.Sprintf("Worker %d batch %d starting - table: %s, row_range: %s, batch_size: %d",
-		job.WorkerID, job.BatchNumber, job.TableName, job.RowRange, len(job.PKValues)))
+	d.logger.Info(fmt.Sprintf("Worker %d batch %d/%d starting - table: %s, row_range: %s, batch_size: %d",
+		job.WorkerID, job.BatchNumber, job.TotalBatches, job.TableName, job.RowRange, len(job.PKValues)))
 
 	// Generate fake values for all rows in the batch first
 	type RowUpdate struct {
