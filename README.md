@@ -74,12 +74,45 @@ cp env.example .env
 | `-table` | `TABLE` | (empty) | Table name (required for single table mode) |
 | `-all-tables` | (none) | false | Process all tables (required for all tables mode) |
 | `-debug` | (none) | false | Enable debug logging |
+| `-workers` | (none) | 1 | Number of worker goroutines for parallel processing |
+| `-batch-size` | (none) | 1 | Batch size for bulk database operations |
 
 ## Priority Order
 
 1. Command line arguments (highest priority)
 2. Environment variables
 3. Default values (lowest priority)
+
+## Performance Configuration
+
+The application supports parallel processing with configurable workers and batch sizes for optimal performance.
+
+### Performance Parameters
+
+- **Workers**: Number of concurrent goroutines processing data in parallel
+- **Batch Size**: Number of rows processed in a single database operation
+
+### Performance Examples
+
+```bash
+# Single-threaded processing (default)
+./bin/mysql_cleanup -host=localhost -user=root -db=mydb -table=mytable
+
+# Multi-threaded with 4 workers and small batches
+./bin/mysql_cleanup -host=localhost -user=root -db=mydb -table=mytable -workers=4 -batch-size=10
+
+# High-performance with large batches
+./bin/mysql_cleanup -host=localhost -user=root -db=mydb -table=mytable -workers=4 -batch-size=100
+```
+
+### Performance Optimization
+
+- **Small datasets**: Use default settings (1 worker, 1 batch size)
+- **Medium datasets**: Use 2-4 workers with batch sizes of 10-50
+- **Large datasets**: Use 4-8 workers with batch sizes of 50-200
+- **Very large datasets**: Use 8+ workers with batch sizes of 100-500
+
+The application uses bulk `INSERT ... ON DUPLICATE KEY UPDATE` operations which provide significant performance improvements over row-by-row updates.
 
 ## Logging
 

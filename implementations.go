@@ -553,8 +553,13 @@ func (d *DataCleanupService) processBatchesInParallelPK(db *sql.DB, databaseName
 			d.logger.Warn(fmt.Sprintf("Worker %d batch %d had errors - table: %s, row_range: %s, processed: %d, errors: %d, duration: %s",
 				result.WorkerID, result.BatchNumber, result.TableName, result.RowRange, result.ProcessedCount, result.ErrorCount, FormatDuration(result.Duration)))
 		} else {
-			d.logger.Debug(fmt.Sprintf("Worker %d batch %d completed successfully - table: %s, row_range: %s, processed: %d, duration: %s",
+			d.logger.Info(fmt.Sprintf("Worker %d batch %d completed successfully - table: %s, row_range: %s, processed: %d, duration: %s",
 				result.WorkerID, result.BatchNumber, result.TableName, result.RowRange, result.ProcessedCount, FormatDuration(result.Duration)))
+			// Log sample data at debug level
+			if len(result.SampleData) > 0 {
+				d.logger.Debug(fmt.Sprintf("Worker %d batch %d sample data - table: %s, sample_rows: %s",
+					result.WorkerID, result.BatchNumber, result.TableName, d.formatSampleData(result.SampleData)))
+			}
 		}
 	}
 	return totalProcessed, totalErrors
@@ -581,24 +586,25 @@ func (d *DataCleanupService) workerPK(workerID int, db *sql.DB, generator *Schem
 		job.WorkerID = workerID
 
 		startTime := time.Now()
-		processed, errors := d.processBatchPK(db, generator, job)
+		processed, errors, sampleData := d.processBatchPK(db, generator, job)
 		duration := time.Since(startTime)
 		resultChan <- BatchResult{
 			BatchJob:       job,
 			ProcessedCount: processed,
 			ErrorCount:     errors,
 			Duration:       duration,
+			SampleData:     sampleData,
 		}
 	}
 }
 
 // processBatchPK processes a single batch of rows using bulk UPDATE with CASE statements
-func (d *DataCleanupService) processBatchPK(db *sql.DB, generator *SchemaAwareGofakeitGenerator, job BatchJob) (int, int) {
+func (d *DataCleanupService) processBatchPK(db *sql.DB, generator *SchemaAwareGofakeitGenerator, job BatchJob) (int, int, []SampleRowData) {
 	if len(job.PKValues) == 0 {
-		return 0, 0
+		return 0, 0, nil
 	}
 
-	d.logger.Debug(fmt.Sprintf("Worker %d batch %d starting - table: %s, row_range: %s, batch_size: %d",
+	d.logger.Info(fmt.Sprintf("Worker %d batch %d starting - table: %s, row_range: %s, batch_size: %d",
 		job.WorkerID, job.BatchNumber, job.TableName, job.RowRange, len(job.PKValues)))
 
 	// Generate fake values for all rows in the batch first
@@ -633,7 +639,7 @@ func (d *DataCleanupService) processBatchPK(db *sql.DB, generator *SchemaAwareGo
 	}
 
 	if len(rowUpdates) == 0 {
-		return 0, 0
+		return 0, 0, nil
 	}
 
 	// Build INSERT ... ON DUPLICATE KEY UPDATE query (much simpler!)
@@ -695,7 +701,7 @@ func (d *DataCleanupService) processBatchPK(db *sql.DB, generator *SchemaAwareGo
 	result, err := db.Exec(query, args...)
 	if err != nil {
 		d.logger.Error(fmt.Sprintf("Failed to execute bulk update - table: %s, error: %s", job.TableName, err))
-		return 0, len(rowUpdates)
+		return 0, len(rowUpdates), nil
 	}
 
 	rowsAffected, _ := result.RowsAffected()
@@ -706,10 +712,22 @@ func (d *DataCleanupService) processBatchPK(db *sql.DB, generator *SchemaAwareGo
 		actualRowsUpdated = int(rowsAffected / 2)
 	}
 
-	d.logger.Debug(fmt.Sprintf("Worker %d batch %d bulk update completed - table: %s, rows_updated: %d, batch_size: %d",
-		job.WorkerID, job.BatchNumber, job.TableName, actualRowsUpdated, len(rowUpdates)))
+	// Collect sample data for debug logging (first and last few rows)
+	var sampleData []SampleRowData
+	for i, rowUpdate := range rowUpdates {
+		if i < 2 || i >= len(rowUpdates)-2 { // First 2 and last 2 rows
+			pkValues := make(map[string]interface{})
+			for j, col := range job.PKCols {
+				pkValues[col] = rowUpdate.PKValues[j]
+			}
+			sampleData = append(sampleData, SampleRowData{
+				PKValues:       pkValues,
+				UpdatedColumns: rowUpdate.ColumnUpdates,
+			})
+		}
+	}
 
-	return actualRowsUpdated, 0
+	return actualRowsUpdated, 0, sampleData
 }
 
 // formatSampleData formats sample row data for debug logging

@@ -417,7 +417,7 @@ func TestPerformanceComparison(t *testing.T) {
 	duration1 := time.Since(startTime1)
 
 	// Reset test data
-	if err := resetTestDataForPerformance(db); err != nil {
+	if err := resetTestData(db); err != nil {
 		t.Fatalf("Failed to reset test data: %v", err)
 	}
 
@@ -906,12 +906,6 @@ func createTestDataWithErrors(db *sql.DB) error {
 }
 
 func resetTestData(db *sql.DB) error {
-	// Clear the performance test table
-	_, err := db.Exec("DELETE FROM acme_corp.performance_test_table")
-	return err
-}
-
-func resetTestDataForPerformance(db *sql.DB) error {
 	// Clear the performance test table
 	_, err := db.Exec("DELETE FROM acme_corp.performance_test_table")
 	return err
