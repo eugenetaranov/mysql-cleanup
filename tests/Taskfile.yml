@@ -1,16 +1,21 @@
 version: '3'
 
 tasks:
-  build:
-    desc: Build the MySQL cleanup binary
+
+  clean:
+    desc: Clean build artifacts and binaries
     cmds:
-      - cd .. && go build -o bin/mysql_cleanup
-    sources:
-      - ../main.go
-      - ../go.mod
-      - ../go.sum
-    generates:
-      - ../bin/mysql_cleanup
+      - cd .. && rm -rf bin/
+      - cd .. && go clean -cache
+      - cd .. && go clean -testcache
+
+  build:
+    desc: Cross-compile for Mac ARM and Linux AMD64
+    cmds:
+      - task: clean
+      - cd .. && mkdir -p bin
+      - cd .. && GOOS=darwin GOARCH=arm64 go build -o bin/mysql_cleanup-darwin-arm64
+      - cd .. && GOOS=linux GOARCH=amd64 go build -o bin/mysql_cleanup-linux-amd64
 
   up:
     desc: Start MySQL container with test databases
