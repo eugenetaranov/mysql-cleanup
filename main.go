@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 
 	"github.com/joho/godotenv"
 )
@@ -28,7 +29,7 @@ func createService(debug bool, workers, batchSize int) *Service {
 	// Create concrete implementations
 	dbConnector := &MySQLConnector{}
 	fileReader := &OSFileReader{}
-	logger := NewZapLogger(debug) // Use zap logger with debug flag
+	logger := &StdLogger{} // Use simple logger without stack traces
 	s3Handler := NewS3Handler(logger)
 	configParser := NewYAMLConfigParser(fileReader, s3Handler, logger)
 	fakeGenerator := NewGofakeitGenerator() // Use constructor instead of &GofakeitGenerator{}
@@ -119,7 +120,22 @@ func main() {
 		service.logger.Debug("========================")
 		stats, err := service.dataCleaner.CleanupData(config)
 		if err != nil {
-			service.logger.Error(fmt.Sprintf("Error during data cleanup - error: %s", err))
+			// Provide specific error messages based on failure type
+			if strings.Contains(err.Error(), "connection timeout") || strings.Contains(err.Error(), "i/o timeout") {
+				service.logger.Error("Database connection timeout - server is not responding")
+			} else if strings.Contains(err.Error(), "Access denied") || strings.Contains(err.Error(), "authentication") {
+				service.logger.Error("Database authentication failed - check username/password")
+			} else if strings.Contains(err.Error(), "connection refused") {
+				service.logger.Error("Database connection refused - check if server is running")
+			} else if strings.Contains(err.Error(), "no such host") || strings.Contains(err.Error(), "unknown host") {
+				service.logger.Error("Database host not found - check hostname/IP address")
+			} else if strings.Contains(err.Error(), "Unknown database") {
+				service.logger.Error("Database not found - check database name")
+			} else if strings.Contains(err.Error(), "no primary key") {
+				service.logger.Error("Table structure issue - the specified table does not have a primary key defined")
+			} else {
+				service.logger.Error(fmt.Sprintf("Data cleanup failed: %s", err))
+			}
 		} else {
 			service.logger.Info(fmt.Sprintf("Data cleanup completed successfully! total_rows_processed: %d, tables_processed: %d, total_duration: %s",
 				stats.TotalRowsProcessed, stats.TablesProcessed, FormatDuration(stats.TotalDuration)))

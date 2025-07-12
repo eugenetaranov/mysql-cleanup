@@ -45,16 +45,22 @@ func FormatDuration(d time.Duration) string {
 type MySQLConnector struct{}
 
 func (m *MySQLConnector) Connect(config Config) (*sql.DB, error) {
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true",
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true&timeout=2s&readTimeout=2s&writeTimeout=2s",
 		config.User, config.Password, config.Host, config.Port, config.DB)
 	// Note: We can't log the full DSN as it contains the password
 	log.Printf("Connecting to MySQL database: %s@%s:%s/%s", config.User, config.Host, config.Port, config.DB)
-	log.Printf("[DEBUG] DSN: %s:****@tcp(%s:%s)/%s?parseTime=true (config.DB=%q)", config.User, config.Host, config.Port, config.DB, config.DB)
+	log.Printf("[DEBUG] DSN: %s:****@tcp(%s:%s)/%s?parseTime=true&timeout=2s&readTimeout=2s&writeTimeout=2s (config.DB=%q)", config.User, config.Host, config.Port, config.DB, config.DB)
 
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
+
+	// Set connection pool settings with short timeouts
+	db.SetConnMaxLifetime(5 * time.Second)
+	db.SetMaxOpenConns(10)
+	db.SetMaxIdleConns(5)
+
 	return db, nil
 }
 
@@ -322,7 +328,6 @@ func (d *DataCleanupService) CleanupData(config Config) (*CleanupStats, error) {
 				d.logger.Debug(fmt.Sprintf("Processing single table - table: %s", config.Table))
 				rowsProcessed, err := d.UpdateTableData(db, config.DB, config.Table, tableConfig)
 				if err != nil {
-					d.logger.Error(fmt.Sprintf("Failed to update table - table: %s, error: %s", config.Table, err))
 					return nil, err
 				}
 				stats.TotalRowsProcessed += rowsProcessed
@@ -365,7 +370,6 @@ func (d *DataCleanupService) UpdateTables(db *sql.DB, databaseName string, table
 
 		rowsProcessed, err := d.UpdateTableData(db, databaseName, tableName, tableConfig)
 		if err != nil {
-			d.logger.Error(fmt.Sprintf("Failed to update table - table: %s, error: %s", tableName, err))
 			return nil, fmt.Errorf("failed to update table %s: %w", tableName, err)
 		}
 
@@ -931,8 +935,11 @@ func getPrimaryKeyColumns(db *sql.DB, databaseName, tableName string, logger Log
 	`
 	rows, err := db.Query(query, databaseName, tableName)
 	if err != nil {
-		logger.Error(fmt.Sprintf("Failed to query primary key columns - error: %s, table: %s", err, tableName))
-		return nil, err
+		// Check if it's a connection timeout error
+		if strings.Contains(err.Error(), "i/o timeout") || strings.Contains(err.Error(), "connection timed out") {
+			return nil, fmt.Errorf("database connection timeout")
+		}
+		return nil, fmt.Errorf("database query failed: %w", err)
 	}
 	defer rows.Close()
 
@@ -940,14 +947,12 @@ func getPrimaryKeyColumns(db *sql.DB, databaseName, tableName string, logger Log
 	for rows.Next() {
 		var col string
 		if err := rows.Scan(&col); err != nil {
-			logger.Error(fmt.Sprintf("Failed to scan PK column - error: %s, table: %s", err, tableName))
-			return nil, err
+			return nil, fmt.Errorf("failed to read table structure: %w", err)
 		}
 		cols = append(cols, col)
 	}
 	if len(cols) == 0 {
-		logger.Error(fmt.Sprintf("No primary key found for table - table: %s", tableName))
-		return nil, fmt.Errorf("no primary key found for table %s", tableName)
+		return nil, fmt.Errorf("table %s.%s has no primary key defined", databaseName, tableName)
 	}
 	logger.Info(fmt.Sprintf("Discovered primary key columns - table: %s, pk_columns: %v", tableName, cols))
 	return cols, nil
