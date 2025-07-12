@@ -310,7 +310,7 @@ func (d *DataCleanupService) CleanupData(config Config) (*CleanupStats, error) {
 				d.logger.Debug(fmt.Sprintf("Checking update tables - update_count: %d", len(dbConfig.Update)))
 				d.logger.Debug("Processing all tables mode")
 				d.logger.Debug(fmt.Sprintf("Processing all tables - table_count: %d", len(dbConfig.Update)))
-				tableStats, err := d.UpdateTables(db, config.DB, dbConfig.Update)
+				tableStats, err := d.UpdateTables(db, config.DB, dbConfig.Update, config)
 				if err != nil {
 					d.logger.Error(fmt.Sprintf("Failed to update tables - error: %s", err))
 					return nil, err
@@ -326,7 +326,7 @@ func (d *DataCleanupService) CleanupData(config Config) (*CleanupStats, error) {
 				}
 
 				d.logger.Debug(fmt.Sprintf("Processing single table - table: %s", config.Table))
-				rowsProcessed, err := d.UpdateTableData(db, config.DB, config.Table, tableConfig)
+				rowsProcessed, err := d.UpdateTableData(db, config.DB, config.Table, tableConfig, config)
 				if err != nil {
 					return nil, err
 				}
@@ -362,13 +362,13 @@ func (d *DataCleanupService) TruncateTables(db *sql.DB, tables []string) error {
 	return nil
 }
 
-func (d *DataCleanupService) UpdateTables(db *sql.DB, databaseName string, tableConfigs map[string]TableUpdateConfig) (*CleanupStats, error) {
+func (d *DataCleanupService) UpdateTables(db *sql.DB, databaseName string, tableConfigs map[string]TableUpdateConfig, config Config) (*CleanupStats, error) {
 	stats := &CleanupStats{}
 
 	for tableName, tableConfig := range tableConfigs {
 		d.logger.Debug(fmt.Sprintf("Updating table - table: %s", tableName))
 
-		rowsProcessed, err := d.UpdateTableData(db, databaseName, tableName, tableConfig)
+		rowsProcessed, err := d.UpdateTableData(db, databaseName, tableName, tableConfig, config)
 		if err != nil {
 			return nil, fmt.Errorf("failed to update table %s: %w", tableName, err)
 		}
@@ -381,9 +381,15 @@ func (d *DataCleanupService) UpdateTables(db *sql.DB, databaseName string, table
 	return stats, nil
 }
 
-func (d *DataCleanupService) UpdateTableData(db *sql.DB, databaseName, tableName string, tableConfig TableUpdateConfig) (int, error) {
-	d.logger.Debug(fmt.Sprintf("Starting parallel table data update - table: %s, worker_count: %d, batch_size: %d",
-		tableName, d.batchProcessor.workerCount, d.batchProcessor.batchSize))
+func (d *DataCleanupService) UpdateTableData(db *sql.DB, databaseName, tableName string, tableConfig TableUpdateConfig, config Config) (int, error) {
+	// Parse ID range if specified
+	idRange, err := ParseIDRange(config.Range)
+	if err != nil {
+		return 0, fmt.Errorf("invalid range specification: %w", err)
+	}
+
+	d.logger.Debug(fmt.Sprintf("Starting parallel table data update - table: %s, worker_count: %d, batch_size: %d, range: %s",
+		tableName, d.batchProcessor.workerCount, d.batchProcessor.batchSize, idRange.String()))
 
 	startTime := time.Now()
 
@@ -391,6 +397,11 @@ func (d *DataCleanupService) UpdateTableData(db *sql.DB, databaseName, tableName
 	pkCols, err := getPrimaryKeyColumns(db, databaseName, tableName, d.logger)
 	if err != nil {
 		return 0, fmt.Errorf("failed to discover primary key: %w", err)
+	}
+
+	// Check if range filtering is possible (requires single-column PK)
+	if idRange.HasRange && len(pkCols) != 1 {
+		return 0, fmt.Errorf("range filtering requires a single-column primary key, but table %s has %d primary key columns", tableName, len(pkCols))
 	}
 
 	// Pre-cache column info to avoid concurrent map access issues
@@ -433,62 +444,15 @@ func (d *DataCleanupService) UpdateTableData(db *sql.DB, databaseName, tableName
 
 	d.logger.Debug(fmt.Sprintf("Pre-validated columns - table: %s, valid_columns: %d", tableName, len(validColumns)))
 
-	whereClause := ""
-	if tableConfig.ExcludeClause != "" {
-		whereClause = fmt.Sprintf("WHERE NOT (%s)", tableConfig.ExcludeClause)
-		d.logger.Debug(fmt.Sprintf("Using exclude clause - exclude_clause: %s", tableConfig.ExcludeClause))
-	}
-
-	// Build SELECT for PK columns
-	selectCols := ""
-	for i, col := range pkCols {
-		if i > 0 {
-			selectCols += ", "
-		}
-		selectCols += fmt.Sprintf("`%s`", col)
-	}
-	selectQuery := fmt.Sprintf("SELECT %s FROM `%s` %s", selectCols, tableName, whereClause)
-	d.logger.Debug(fmt.Sprintf("Executing select query - query: %s", selectQuery))
-	rows, err := db.Query(selectQuery)
+	// Process the table with optional range filtering
+	totalProcessed, err := d.processTableWithRange(db, databaseName, tableName, tableConfig, pkCols, validColumns, idRange)
 	if err != nil {
-		return 0, fmt.Errorf("failed to get rows to update: %w", err)
-	}
-	defer rows.Close()
-
-	// Collect PK values for each row
-	var pkValues [][]interface{}
-	for rows.Next() {
-		vals := make([]interface{}, len(pkCols))
-		ptrs := make([]interface{}, len(pkCols))
-		for i := range vals {
-			ptrs[i] = &vals[i]
-		}
-		if err := rows.Scan(ptrs...); err != nil {
-			d.logger.Warn(fmt.Sprintf("Failed to scan PK values - table: %s, error: %s", tableName, err))
-			continue
-		}
-		pkValues = append(pkValues, vals)
-	}
-	d.logger.Debug(fmt.Sprintf("Scanned PK values - table: %s, row_count: %d", tableName, len(pkValues)))
-	if len(pkValues) == 0 {
-		d.logger.Info(fmt.Sprintf("Table processing completed - table: %s, no rows to update", tableName))
-		return 0, nil
+		return 0, err
 	}
 
-	// Calculate batch count
-	batchCount := (len(pkValues) + d.batchProcessor.batchSize - 1) / d.batchProcessor.batchSize
-
-	// Log start of processing at info level
-	d.logger.Info(fmt.Sprintf("Starting table processing - table: %s, total_rows: %d, workers: %d, batch_size: %d, batches: %d",
-		tableName, len(pkValues), d.batchProcessor.workerCount, d.batchProcessor.batchSize, batchCount))
-
-	// Process rows in parallel batches
-	totalProcessed, totalErrors := d.processBatchesInParallelPK(db, databaseName, tableName, pkCols, pkValues, tableConfig, validColumns)
 	duration := time.Since(startTime)
-
-	// Log completion at info level with formatted duration
-	d.logger.Info(fmt.Sprintf("Table processing completed - table: %s, total_rows: %d, processed: %d, errors: %d, duration: %s, rows_per_second: %.1f",
-		tableName, len(pkValues), totalProcessed, totalErrors, FormatDuration(duration), float64(totalProcessed)/duration.Seconds()))
+	d.logger.Info(fmt.Sprintf("Table processing completed - table: %s, processed: %d, range: %s, duration: %s, rows_per_second: %.1f",
+		tableName, totalProcessed, idRange.String(), FormatDuration(duration), float64(totalProcessed)/duration.Seconds()))
 
 	return totalProcessed, nil
 }
@@ -1393,4 +1357,85 @@ func (m *MySQLTableFetcher) FetchAndDisplayTableData(config Config) error {
 	}
 
 	return nil
+}
+
+// processTableWithRange processes a table with optional range filtering
+func (d *DataCleanupService) processTableWithRange(db *sql.DB, databaseName, tableName string, tableConfig TableUpdateConfig, pkCols []string, validColumns map[string]string, idRange *IDRange) (int, error) {
+	// Build WHERE clause with range and exclude conditions
+	var whereConditions []string
+
+	// Add range filtering if specified
+	if idRange.HasRange {
+		pkCol := pkCols[0] // Already validated to be single-column PK
+		rangeClause := idRange.BuildRangeWhereClause(pkCol)
+		if rangeClause != "" {
+			whereConditions = append(whereConditions, rangeClause)
+			d.logger.Debug(fmt.Sprintf("Using range filter - table: %s, range_clause: %s", tableName, rangeClause))
+		}
+	}
+
+	// Add exclude clause if specified
+	if tableConfig.ExcludeClause != "" {
+		whereConditions = append(whereConditions, fmt.Sprintf("NOT (%s)", tableConfig.ExcludeClause))
+		d.logger.Debug(fmt.Sprintf("Using exclude clause - exclude_clause: %s", tableConfig.ExcludeClause))
+	}
+
+	// Build final WHERE clause
+	whereClause := ""
+	if len(whereConditions) > 0 {
+		whereClause = "WHERE " + strings.Join(whereConditions, " AND ")
+	}
+
+	// Build SELECT for PK columns
+	selectCols := ""
+	for i, col := range pkCols {
+		if i > 0 {
+			selectCols += ", "
+		}
+		selectCols += fmt.Sprintf("`%s`", col)
+	}
+	selectQuery := fmt.Sprintf("SELECT %s FROM `%s`.`%s` %s", selectCols, databaseName, tableName, whereClause)
+	d.logger.Debug(fmt.Sprintf("Executing select query - query: %s", selectQuery))
+	rows, err := db.Query(selectQuery)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get rows to update: %w", err)
+	}
+	defer rows.Close()
+
+	// Collect PK values for each row
+	var pkValues [][]interface{}
+	for rows.Next() {
+		vals := make([]interface{}, len(pkCols))
+		ptrs := make([]interface{}, len(pkCols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			d.logger.Warn(fmt.Sprintf("Failed to scan PK values - table: %s, error: %s", tableName, err))
+			continue
+		}
+		pkValues = append(pkValues, vals)
+	}
+	d.logger.Debug(fmt.Sprintf("Scanned PK values - table: %s, row_count: %d", tableName, len(pkValues)))
+	if len(pkValues) == 0 {
+		d.logger.Info(fmt.Sprintf("Table processing completed - table: %s, no rows to update", tableName))
+		return 0, nil
+	}
+
+	// Calculate batch count
+	batchCount := (len(pkValues) + d.batchProcessor.batchSize - 1) / d.batchProcessor.batchSize
+
+	// Log start of processing at info level
+	d.logger.Info(fmt.Sprintf("Starting table processing - table: %s, total_rows: %d, workers: %d, batch_size: %d, batches: %d",
+		tableName, len(pkValues), d.batchProcessor.workerCount, d.batchProcessor.batchSize, batchCount))
+
+	// Process rows in parallel batches
+	totalProcessed, totalErrors := d.processBatchesInParallelPK(db, databaseName, tableName, pkCols, pkValues, tableConfig, validColumns)
+
+	if totalErrors > 0 {
+		d.logger.Warn(fmt.Sprintf("Table processing had errors - table: %s, processed: %d, errors: %d",
+			tableName, totalProcessed, totalErrors))
+	}
+
+	return totalProcessed, nil
 }

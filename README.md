@@ -76,6 +76,39 @@ cp env.example .env
 | `-debug` | (none) | false | Enable debug logging |
 | `-workers` | (none) | 1 | Number of worker goroutines for parallel processing |
 | `-batch-size` | (none) | 1 | Batch size for bulk database operations |
+| `-range` | (none) | (empty) | ID range to process (e.g., '0:1000', '1000:', ':100K', '100K:1M'; colon required; supports K/M/B suffixes) |
+
+## Range Filtering
+
+You can limit processing to a specific range of primary key IDs using the `-range` parameter. This is useful for partial processing, resuming, or parallelizing work.
+
+**Syntax:**
+- `-range 0:1000` — Process IDs 0 to 1000 (inclusive)
+- `-range 1000:` — Process IDs 1000 and above
+- `-range :1000` — Process IDs up to 1000
+- `-range 100K:1M` — Process IDs 100,000 to 1,000,000
+- `-range :1M` — Process IDs up to 1,000,000
+- `-range 1M:` — Process IDs 1,000,000 and above
+
+**Notes:**
+- The colon (`:`) is required in all range specifications.
+- You can use `K` (thousand), `M` (million), or `B` (billion) suffixes (case-insensitive).
+- If `-range` is not specified, all rows are processed.
+
+**Examples:**
+```bash
+# Process only IDs 1 to 1000
+./bin/mysql_cleanup -db=mydb -table=mytable -range 1:1000
+
+# Process IDs 100,000 to 1,000,000
+./bin/mysql_cleanup -db=mydb -table=mytable -range 100K:1M
+
+# Process IDs from 1,000,000 and up
+./bin/mysql_cleanup -db=mydb -table=mytable -range 1M:
+
+# Process all rows (no range specified)
+./bin/mysql_cleanup -db=mydb -table=mytable
+```
 
 ## Priority Order
 

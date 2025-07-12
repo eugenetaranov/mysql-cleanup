@@ -80,3 +80,84 @@ func setupSimpleTestMySQLContainer(t *testing.T) (testcontainers.Container, *sql
 
 	return container, db, cleanup
 }
+
+func TestParseHumanizedRange(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected *IDRange
+		hasError bool
+	}{
+		// Valid humanized ranges
+		{":100K", &IDRange{Start: nil, End: int64Ptr(100000), HasRange: true}, false},
+		{"100K:", &IDRange{Start: int64Ptr(100000), End: nil, HasRange: true}, false},
+		{"100K:1M", &IDRange{Start: int64Ptr(100000), End: int64Ptr(1000000), HasRange: true}, false},
+		{"1M:2M", &IDRange{Start: int64Ptr(1000000), End: int64Ptr(2000000), HasRange: true}, false},
+		{"500K:1M", &IDRange{Start: int64Ptr(500000), End: int64Ptr(1000000), HasRange: true}, false},
+		{":1B", &IDRange{Start: nil, End: int64Ptr(1000000000), HasRange: true}, false},
+		{"1B:", &IDRange{Start: int64Ptr(1000000000), End: nil, HasRange: true}, false},
+
+		// Mixed formats
+		{"1000:100K", &IDRange{Start: int64Ptr(1000), End: int64Ptr(100000), HasRange: true}, false},
+		{"100K:1000000", &IDRange{Start: int64Ptr(100000), End: int64Ptr(1000000), HasRange: true}, false},
+
+		// Case insensitive
+		{":100k", &IDRange{Start: nil, End: int64Ptr(100000), HasRange: true}, false},
+		{":1m", &IDRange{Start: nil, End: int64Ptr(1000000), HasRange: true}, false},
+		{":1b", &IDRange{Start: nil, End: int64Ptr(1000000000), HasRange: true}, false},
+
+		// Invalid formats
+		{"1000", nil, true}, // No colon
+		{"100K", nil, true}, // No colon
+		{":", &IDRange{Start: nil, End: nil, HasRange: true}, false}, // Empty start and end
+		{"100K:invalid", nil, true},                                  // Invalid end value
+		{"invalid:100K", nil, true},                                  // Invalid start value
+	}
+
+	for _, test := range tests {
+		result, err := ParseIDRange(test.input)
+
+		if test.hasError {
+			if err == nil {
+				t.Errorf("Expected error for input '%s', but got none", test.input)
+			}
+		} else {
+			if err != nil {
+				t.Errorf("Unexpected error for input '%s': %v", test.input, err)
+			} else if !rangesEqual(result, test.expected) {
+				t.Errorf("For input '%s', expected %v, got %v", test.input, test.expected, result)
+			}
+		}
+	}
+}
+
+func int64Ptr(val int64) *int64 {
+	return &val
+}
+
+func rangesEqual(a, b *IDRange) bool {
+	if a.HasRange != b.HasRange {
+		return false
+	}
+
+	if a.Start == nil && b.Start != nil {
+		return false
+	}
+	if a.Start != nil && b.Start == nil {
+		return false
+	}
+	if a.Start != nil && b.Start != nil && *a.Start != *b.Start {
+		return false
+	}
+
+	if a.End == nil && b.End != nil {
+		return false
+	}
+	if a.End != nil && b.End == nil {
+		return false
+	}
+	if a.End != nil && b.End != nil && *a.End != *b.End {
+		return false
+	}
+
+	return true
+}

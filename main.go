@@ -22,6 +22,7 @@ type Config struct {
 	Debug     bool
 	Workers   int
 	BatchSize int
+	Range     string // ID range specification (e.g., "0:1000", "1000:", ":100K", "100K:1M" - colon required)
 }
 
 // createService creates and wires up all dependencies
@@ -73,6 +74,7 @@ func main() {
 	flag.BoolVar(&config.Debug, "debug", false, "Enable debug logging")
 	flag.IntVar(&config.Workers, "workers", 1, "Number of worker goroutines (default: 1)")
 	flag.IntVar(&config.BatchSize, "batch-size", 1, "Batch size for updates (default: 1)")
+	flag.StringVar(&config.Range, "range", "", "ID range to process (e.g., '0:1000' for IDs 0-1000, '1000:' for IDs 1000+, ':100K' for IDs up to 100K, '100K:1M' for IDs 100K-1M) - colon required")
 
 	// Parse flags
 	flag.Parse()
@@ -84,8 +86,8 @@ func main() {
 	// Output the provided arguments
 	service.logger.Debug("MySQL Cleanup CLI")
 	service.logger.Debug("==================")
-	service.logger.Debug(fmt.Sprintf("Configuration - host: %s, user: %s, port: %s, password: %s, config: %s, database: %s",
-		config.Host, config.User, config.Port, maskPassword(config.Password), config.Config, config.DB))
+	service.logger.Debug(fmt.Sprintf("Configuration - host: %s, user: %s, port: %s, password: %s, config: %s, database: %s, range: %s",
+		config.Host, config.User, config.Port, maskPassword(config.Password), config.Config, config.DB, config.Range))
 	if config.AllTables {
 		service.logger.Debug("Mode: All tables")
 	} else {

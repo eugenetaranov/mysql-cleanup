@@ -1426,3 +1426,67 @@ func TestS3ConfigDownload(t *testing.T) {
 	// ... existing code ...
 }
 */
+
+// TestRangeAffectsOnlySpecifiedRows verifies that only rows within the specified range are modified
+func TestRangeAffectsOnlySpecifiedRows(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+	container, db, cleanup := setupTestMySQLContainer(t)
+	defer container.Terminate(context.Background())
+	defer cleanup()
+
+	host, err := container.Host(context.Background())
+	if err != nil {
+		t.Fatalf("Failed to get container host: %v", err)
+	}
+	port, err := container.MappedPort(context.Background(), "3306")
+	if err != nil {
+		t.Fatalf("Failed to get container port: %v", err)
+	}
+
+	// Get original emails (baseline)
+	originalEmails, err := getEmailsFromTable(db, "acme_corp", "account_user")
+	if err != nil {
+		t.Fatalf("Failed to get original emails: %v", err)
+	}
+
+	// Run the cleanup tool with a range (IDs 2 to 5)
+	config := Config{
+		Host:     host,
+		Port:     port.Port(),
+		User:     "root",
+		Password: "root",
+		DB:       "acme_corp",
+		Config:   "tests/config.yaml",
+		Table:    "account_user",
+		Range:    "2:5",
+	}
+
+	service := createService(false, 0, 0)
+	_, err = service.dataCleaner.CleanupData(config)
+	if err != nil {
+		t.Fatalf("Failed to run cleanup with range: %v", err)
+	}
+
+	// Get emails after cleanup
+	changedEmails, err := getEmailsFromTable(db, "acme_corp", "account_user")
+	if err != nil {
+		t.Fatalf("Failed to get changed emails: %v", err)
+	}
+
+	// Check that only IDs 2,3,4,5 are changed
+	for id := 1; id <= 10; id++ {
+		orig := originalEmails[id]
+		changed := changedEmails[id]
+		if id >= 2 && id <= 5 {
+			if orig == changed {
+				t.Errorf("Expected email for ID %d to change, but it did not. Before: %s, After: %s", id, orig, changed)
+			}
+		} else {
+			if orig != changed {
+				t.Errorf("Expected email for ID %d to remain unchanged, but it changed. Before: %s, After: %s", id, orig, changed)
+			}
+		}
+	}
+}

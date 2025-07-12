@@ -23,8 +23,8 @@ type ConfigParser interface {
 type DataCleaner interface {
 	CleanupData(config Config) (*CleanupStats, error)
 	TruncateTables(db *sql.DB, tables []string) error
-	UpdateTables(db *sql.DB, databaseName string, tableConfigs map[string]TableUpdateConfig) (*CleanupStats, error)
-	UpdateTableData(db *sql.DB, databaseName, tableName string, tableConfig TableUpdateConfig) (int, error)
+	UpdateTables(db *sql.DB, databaseName string, tableConfigs map[string]TableUpdateConfig, config Config) (*CleanupStats, error)
+	UpdateTableData(db *sql.DB, databaseName, tableName string, tableConfig TableUpdateConfig, config Config) (int, error)
 }
 
 // FakeDataGenerator interface for generating fake data
