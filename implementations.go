@@ -534,6 +534,7 @@ func (d *DataCleanupService) processBatchesInParallelPK(db *sql.DB, databaseName
 	totalBatches := len(batches)
 	completedBatches := 0
 	totalBatchDuration := time.Duration(0)
+	tableStartTime := time.Now() // Track actual wall clock time
 
 	for result := range resultChan {
 		totalProcessed += result.ProcessedCount
@@ -559,23 +560,25 @@ func (d *DataCleanupService) processBatchesInParallelPK(db *sql.DB, databaseName
 		// Track individual batch times for better ETA calculation
 		d.recordBatchTime(0, result.Duration) // Use worker 0 as global tracker
 
-		// Calculate ETA using a safer approach without division
+		// Calculate ETA based on actual wall clock time (not summed batch times)
 		globalETA := time.Duration(0)
 		if completedBatches > 0 && globalPercent > 0.1 {
-			// Calculate ETA using rate-based approach (batches per second)
-			elapsedTime := totalBatchDuration.Seconds()
-			if elapsedTime > 0 {
-				// Calculate batches per second
-				batchesPerSecond := float64(completedBatches) / elapsedTime
+			// Use actual wall clock time instead of summed batch times
+			wallClockTime := time.Since(tableStartTime).Seconds()
+			if wallClockTime > 0 && globalPercent > 0 {
+				// Time per 1% = wall clock time / current percentage
+				timePerPercent := wallClockTime / globalPercent
 
-				// Calculate remaining batches
-				remainingBatches := totalBatches - completedBatches
+				// Remaining percentage
+				remainingPercent := 100.0 - globalPercent
 
-				// ETA = remaining batches / batches per second
-				if batchesPerSecond > 0 {
-					etaSeconds := float64(remainingBatches) / batchesPerSecond
-					globalETA = time.Duration(etaSeconds * float64(time.Second))
-				}
+				// ETA = time per percent × remaining percent
+				etaSeconds := timePerPercent * remainingPercent
+				globalETA = time.Duration(etaSeconds * float64(time.Second))
+
+				// Debug logging
+				d.logger.Debug(fmt.Sprintf("ETA Debug - wall_clock_time: %.1fs, global_percent: %.1f%%, time_per_percent: %.1fs, remaining_percent: %.1f%%, calculated_eta: %s",
+					wallClockTime, globalPercent, timePerPercent, remainingPercent, FormatDuration(globalETA)))
 			}
 		}
 
