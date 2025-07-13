@@ -145,6 +145,8 @@ func main() {
 			} else {
 				service.logger.Error(fmt.Sprintf("Data cleanup failed: %s", err))
 			}
+			// Exit with non-zero code on any error
+			os.Exit(1)
 		} else {
 			service.logger.Info(fmt.Sprintf("Data cleanup completed successfully! total_rows_processed: %d, tables_processed: %d, total_duration: %s",
 				stats.TotalRowsProcessed, stats.TablesProcessed, FormatDuration(stats.TotalDuration)))

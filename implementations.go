@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"io/ioutil"
@@ -337,6 +338,11 @@ func (d *DataCleanupService) CleanupData(config Config) (*CleanupStats, error) {
 	}
 
 	stats.TotalDuration = time.Since(startTime)
+
+	// Log overall completion at info level
+	d.logger.Info(fmt.Sprintf("Data cleanup completed - total_processed: %d, tables_processed: %d, duration: %s",
+		stats.TotalRowsProcessed, stats.TablesProcessed, FormatDuration(stats.TotalDuration)))
+
 	return stats, nil
 }
 
@@ -458,7 +464,7 @@ func (d *DataCleanupService) UpdateTableData(db *sql.DB, databaseName, tableName
 }
 
 // processBatchesInParallelPK processes row batches using a worker pool (PK-aware)
-func (d *DataCleanupService) processBatchesInParallelPK(db *sql.DB, databaseName, tableName string, pkCols []string, pkValues [][]interface{}, tableConfig TableUpdateConfig, validColumns map[string]string) (int, int) {
+func (d *DataCleanupService) processBatchesInParallelPK(db *sql.DB, databaseName, tableName string, pkCols []string, pkValues [][]interface{}, tableConfig TableUpdateConfig, validColumns map[string]string) (int, int, error) {
 	// Reset worker batch times for fresh ETA calculation
 	d.resetWorkerBatchTimes()
 
@@ -466,6 +472,10 @@ func (d *DataCleanupService) processBatchesInParallelPK(db *sql.DB, databaseName
 
 	jobChan := make(chan BatchJob, len(batches))
 	resultChan := make(chan BatchResult, len(batches))
+
+	// Create context for cancellation when errors occur
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	var wg sync.WaitGroup
 	for i := 0; i < d.batchProcessor.workerCount; i++ {
@@ -475,7 +485,7 @@ func (d *DataCleanupService) processBatchesInParallelPK(db *sql.DB, databaseName
 		uniqueSeed := time.Now().UnixNano() + int64(i*1000000) + rand.Int63()
 		workerGenerator := NewSchemaAwareGofakeitGenerator(d.logger)
 		workerGenerator.faker = gofakeit.New(uniqueSeed)
-		go d.workerPK(i, db, workerGenerator, jobChan, resultChan, &wg)
+		go d.workerPKWithContext(ctx, i, db, workerGenerator, jobChan, resultChan, &wg)
 
 		// Small delay to ensure different timestamps for each worker
 		time.Sleep(time.Microsecond)
@@ -484,29 +494,38 @@ func (d *DataCleanupService) processBatchesInParallelPK(db *sql.DB, databaseName
 	go func() {
 		defer close(jobChan)
 		for batchIndex, batch := range batches {
-			// Calculate row range from the first and last PK values in the batch
-			rowRange := "empty"
-			if len(batch) > 0 {
-				firstPK := batch[0][0]
-				lastPK := batch[len(batch)-1][0]
-				if len(batch) == 1 {
-					rowRange = fmt.Sprintf("%v", firstPK)
-				} else {
-					rowRange = fmt.Sprintf("%v-%v", firstPK, lastPK)
+			select {
+			case <-ctx.Done():
+				return // Context cancelled, stop sending jobs
+			default:
+				// Calculate row range from the first and last PK values in the batch
+				rowRange := "empty"
+				if len(batch) > 0 {
+					firstPK := batch[0][0]
+					lastPK := batch[len(batch)-1][0]
+					if len(batch) == 1 {
+						rowRange = fmt.Sprintf("%v", firstPK)
+					} else {
+						rowRange = fmt.Sprintf("%v-%v", firstPK, lastPK)
+					}
 				}
-			}
 
-			jobChan <- BatchJob{
-				DatabaseName: databaseName,
-				TableName:    tableName,
-				PKCols:       pkCols,
-				PKValues:     batch,
-				TableConfig:  tableConfig,
-				ValidColumns: validColumns,
-				BatchNumber:  batchIndex + 1, // 1-based batch numbering
-				TotalBatches: len(batches),   // Total number of batches for percentage calculation
-				WorkerID:     -1,             // Will be set by worker
-				RowRange:     rowRange,
+				select {
+				case jobChan <- BatchJob{
+					DatabaseName: databaseName,
+					TableName:    tableName,
+					PKCols:       pkCols,
+					PKValues:     batch,
+					TableConfig:  tableConfig,
+					ValidColumns: validColumns,
+					BatchNumber:  batchIndex + 1, // 1-based batch numbering
+					TotalBatches: len(batches),   // Total number of batches for percentage calculation
+					WorkerID:     -1,             // Will be set by worker
+					RowRange:     rowRange,
+				}:
+				case <-ctx.Done():
+					return // Context cancelled, stop sending jobs
+				}
 			}
 		}
 	}()
@@ -521,6 +540,15 @@ func (d *DataCleanupService) processBatchesInParallelPK(db *sql.DB, databaseName
 	for result := range resultChan {
 		totalProcessed += result.ProcessedCount
 		totalErrors += result.ErrorCount
+
+		// Check for critical database errors that should cause the entire operation to fail
+		if len(result.Errors) > 0 {
+			// Cancel context to stop all workers immediately
+			cancel()
+			d.logger.Error(fmt.Sprintf("Database error detected - cancelling all workers and failing operation - batch: %d, error: %v", result.BatchNumber, result.Errors[0]))
+			// If any batch had a database error, fail the entire operation
+			return totalProcessed, totalErrors, fmt.Errorf("database error in batch %d: %v", result.BatchNumber, result.Errors[0])
+		}
 
 		// Record batch time for ETA calculation
 		d.recordBatchTime(result.WorkerID, result.Duration)
@@ -542,7 +570,16 @@ func (d *DataCleanupService) processBatchesInParallelPK(db *sql.DB, databaseName
 				result.WorkerID, result.BatchNumber, result.TotalBatches, result.TableName, result.RowRange, result.ProcessedCount, FormatDuration(result.Duration), percentage, eta))
 		}
 	}
-	return totalProcessed, totalErrors
+
+	// Check for critical database errors that should cause the entire operation to fail
+	// Note: We can't iterate over resultChan again since it's already closed
+	// The error checking should be done in the main loop above
+
+	// Log batch processing completion
+	d.logger.Info(fmt.Sprintf("Batch processing completed - table: %s, total_processed: %d, total_errors: %d, total_batches: %d",
+		tableName, totalProcessed, totalErrors, len(batches)))
+
+	return totalProcessed, totalErrors, nil
 }
 
 // createBatchesPK splits PK value slices into batches
@@ -558,6 +595,42 @@ func (d *DataCleanupService) createBatchesPK(pkValues [][]interface{}, batchSize
 	return batches
 }
 
+// workerPKWithContext processes PK-aware batch jobs with context cancellation
+func (d *DataCleanupService) workerPKWithContext(ctx context.Context, workerID int, db *sql.DB, generator *SchemaAwareGofakeitGenerator, jobChan <-chan BatchJob, resultChan chan<- BatchResult, wg *sync.WaitGroup) {
+	defer wg.Done()
+	for {
+		select {
+		case job, ok := <-jobChan:
+			if !ok {
+				return // Channel closed, exit
+			}
+			// Set the worker ID on the job
+			job.WorkerID = workerID
+
+			startTime := time.Now()
+			processed, errors, sampleData, batchErr := d.processBatchPK(db, generator, job)
+			duration := time.Since(startTime)
+
+			// Create result with errors if any occurred
+			var errorsList []error
+			if batchErr != nil {
+				errorsList = []error{batchErr}
+			}
+
+			resultChan <- BatchResult{
+				BatchJob:       job,
+				ProcessedCount: processed,
+				ErrorCount:     errors,
+				Duration:       duration,
+				Errors:         errorsList,
+				SampleData:     sampleData,
+			}
+		case <-ctx.Done():
+			return // Context cancelled, exit immediately
+		}
+	}
+}
+
 // workerPK processes PK-aware batch jobs
 func (d *DataCleanupService) workerPK(workerID int, db *sql.DB, generator *SchemaAwareGofakeitGenerator, jobChan <-chan BatchJob, resultChan chan<- BatchResult, wg *sync.WaitGroup) {
 	defer wg.Done()
@@ -566,22 +639,30 @@ func (d *DataCleanupService) workerPK(workerID int, db *sql.DB, generator *Schem
 		job.WorkerID = workerID
 
 		startTime := time.Now()
-		processed, errors, sampleData := d.processBatchPK(db, generator, job)
+		processed, errors, sampleData, batchErr := d.processBatchPK(db, generator, job)
 		duration := time.Since(startTime)
+
+		// Create result with errors if any occurred
+		var errorsList []error
+		if batchErr != nil {
+			errorsList = []error{batchErr}
+		}
+
 		resultChan <- BatchResult{
 			BatchJob:       job,
 			ProcessedCount: processed,
 			ErrorCount:     errors,
 			Duration:       duration,
+			Errors:         errorsList,
 			SampleData:     sampleData,
 		}
 	}
 }
 
 // processBatchPK processes a single batch of rows using bulk UPDATE with CASE statements
-func (d *DataCleanupService) processBatchPK(db *sql.DB, generator *SchemaAwareGofakeitGenerator, job BatchJob) (int, int, []SampleRowData) {
+func (d *DataCleanupService) processBatchPK(db *sql.DB, generator *SchemaAwareGofakeitGenerator, job BatchJob) (int, int, []SampleRowData, error) {
 	if len(job.PKValues) == 0 {
-		return 0, 0, nil
+		return 0, 0, nil, nil
 	}
 
 	d.logger.Info(fmt.Sprintf("Worker %d batch %d/%d starting - table: %s, row_range: %s, batch_size: %d",
@@ -619,7 +700,7 @@ func (d *DataCleanupService) processBatchPK(db *sql.DB, generator *SchemaAwareGo
 	}
 
 	if len(rowUpdates) == 0 {
-		return 0, 0, nil
+		return 0, 0, nil, nil
 	}
 
 	// Build INSERT ... ON DUPLICATE KEY UPDATE query (much simpler!)
@@ -681,7 +762,7 @@ func (d *DataCleanupService) processBatchPK(db *sql.DB, generator *SchemaAwareGo
 	result, err := db.Exec(query, args...)
 	if err != nil {
 		d.logger.Error(fmt.Sprintf("Failed to execute bulk update - table: %s, error: %s", job.TableName, err))
-		return 0, len(rowUpdates), nil
+		return 0, len(rowUpdates), nil, fmt.Errorf("database error: %w", err)
 	}
 
 	rowsAffected, _ := result.RowsAffected()
@@ -706,7 +787,7 @@ func (d *DataCleanupService) processBatchPK(db *sql.DB, generator *SchemaAwareGo
 		})
 	}
 
-	return actualRowsUpdated, 0, sampleData
+	return actualRowsUpdated, 0, sampleData, nil
 }
 
 // formatSampleData formats sample row data for debug logging
@@ -1394,10 +1475,8 @@ func (d *DataCleanupService) processTableWithRange(db *sql.DB, databaseName, tab
 		return 0, fmt.Errorf("failed to get rows to update: %w", err)
 	}
 	defer rows.Close()
-	queryDuration := time.Since(startTime)
-	d.logger.Info(fmt.Sprintf("Select query completed - table: %s, duration: %s", tableName, FormatDuration(queryDuration)))
 
-	// Collect PK values for each row
+	// Collect PK values for each row - this is where the actual data fetching happens
 	var pkValues [][]interface{}
 	for rows.Next() {
 		vals := make([]interface{}, len(pkCols))
@@ -1411,7 +1490,14 @@ func (d *DataCleanupService) processTableWithRange(db *sql.DB, databaseName, tab
 		}
 		pkValues = append(pkValues, vals)
 	}
-	d.logger.Debug(fmt.Sprintf("Scanned PK values - table: %s, row_count: %d", tableName, len(pkValues)))
+
+	// Check for any errors that occurred during iteration
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("error during result iteration: %w", err)
+	}
+
+	queryDuration := time.Since(startTime)
+	d.logger.Info(fmt.Sprintf("Select query and result processing completed - table: %s, duration: %s, rows_collected: %d", tableName, FormatDuration(queryDuration), len(pkValues)))
 	if len(pkValues) == 0 {
 		d.logger.Info(fmt.Sprintf("Table processing completed - table: %s, no rows to update", tableName))
 		return 0, nil
@@ -1425,12 +1511,20 @@ func (d *DataCleanupService) processTableWithRange(db *sql.DB, databaseName, tab
 		tableName, len(pkValues), d.batchProcessor.workerCount, d.batchProcessor.batchSize, batchCount))
 
 	// Process rows in parallel batches
-	totalProcessed, totalErrors := d.processBatchesInParallelPK(db, databaseName, tableName, pkCols, pkValues, tableConfig, validColumns)
+	totalProcessed, totalErrors, batchErr := d.processBatchesInParallelPK(db, databaseName, tableName, pkCols, pkValues, tableConfig, validColumns)
+
+	if batchErr != nil {
+		return 0, batchErr
+	}
 
 	if totalErrors > 0 {
 		d.logger.Warn(fmt.Sprintf("Table processing had errors - table: %s, processed: %d, errors: %d",
 			tableName, totalProcessed, totalErrors))
 	}
+
+	// Log completion at info level - this is the REAL completion after batch processing
+	d.logger.Info(fmt.Sprintf("Table processing completed - table: %s, processed: %d, errors: %d",
+		tableName, totalProcessed, totalErrors))
 
 	return totalProcessed, nil
 }
