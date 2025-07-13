@@ -559,45 +559,29 @@ func (d *DataCleanupService) processBatchesInParallelPK(db *sql.DB, databaseName
 		// Track individual batch times for better ETA calculation
 		d.recordBatchTime(0, result.Duration) // Use worker 0 as global tracker
 
-		// Calculate ETA using recent batch times (last 10 batches)
-		avgBatchTime := time.Duration(0)
-		if completedBatches > 0 {
-			// Get recent batch times for more accurate ETA
-			d.workerTimesMutex.RLock()
-			recentTimes := d.workerBatchTimes[0] // Global batch times
-			d.workerTimesMutex.RUnlock()
+		// Calculate ETA using a safer approach without division
+		globalETA := time.Duration(0)
+		if completedBatches > 0 && globalPercent > 0.1 {
+			// Calculate ETA using rate-based approach (batches per second)
+			elapsedTime := totalBatchDuration.Seconds()
+			if elapsedTime > 0 {
+				// Calculate batches per second
+				batchesPerSecond := float64(completedBatches) / elapsedTime
 
-			if len(recentTimes) > 0 {
-				// Use average of last 10 batches, or all if less than 10
-				startIdx := 0
-				if len(recentTimes) > 10 {
-					startIdx = len(recentTimes) - 10
+				// Calculate remaining batches
+				remainingBatches := totalBatches - completedBatches
+
+				// ETA = remaining batches / batches per second
+				if batchesPerSecond > 0 {
+					etaSeconds := float64(remainingBatches) / batchesPerSecond
+					globalETA = time.Duration(etaSeconds * float64(time.Second))
 				}
-
-				var totalTime time.Duration
-				count := 0
-				for i := startIdx; i < len(recentTimes); i++ {
-					totalTime += recentTimes[i]
-					count++
-				}
-
-				if count > 0 {
-					avgBatchTime = totalTime / time.Duration(count)
-				}
-			}
-
-			// Fallback to simple average if no recent times
-			if avgBatchTime == 0 {
-				avgBatchTime = totalBatchDuration / time.Duration(completedBatches)
 			}
 		}
 
-		remainingBatches := totalBatches - completedBatches
-		globalETA := avgBatchTime * time.Duration(remainingBatches)
-
 		// Log global progress every batch (or every N batches if you want less spam)
-		d.logger.Info(fmt.Sprintf("Table progress - table: %s, completed_batches: %d/%d, percent: %.1f%%, ETA: %s, avg_batch_time: %s",
-			result.TableName, completedBatches, totalBatches, globalPercent, FormatDuration(globalETA), FormatDuration(avgBatchTime)))
+		d.logger.Info(fmt.Sprintf("Table progress - table: %s, completed_batches: %d/%d, percent: %.1f%%, ETA: %s",
+			result.TableName, completedBatches, totalBatches, globalPercent, FormatDuration(globalETA)))
 	}
 
 	d.logger.Info(fmt.Sprintf("Batch processing completed - table: %s, total_processed: %d, total_errors: %d, total_batches: %d",
