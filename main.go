@@ -74,8 +74,8 @@ func main() {
 	flag.StringVar(&config.Table, "table", getEnvWithDefault("TABLE", ""), "Table name")
 	flag.BoolVar(&config.AllTables, "all-tables", false, "Process all tables in the database")
 	flag.BoolVar(&config.Debug, "debug", false, "Enable debug logging")
-	flag.IntVar(&config.Workers, "workers", 1, "Number of worker goroutines (default: 1)")
-	flag.StringVar(&config.BatchSize, "batch-size", "1", "Batch size for updates (e.g., '1', '1K', '10K', '100K' - supports K/M/B suffixes)")
+	flag.IntVar(&config.Workers, "workers", 10, "Number of worker goroutines (default: 10)")
+	flag.StringVar(&config.BatchSize, "batch-size", "1K", "Batch size for updates (e.g., '1', '1K', '10K', '100K' - supports K/M/B suffixes)")
 	flag.StringVar(&config.Range, "range", "", "ID range to process (e.g., '0:1000' for IDs 0-1000, '1000:' for IDs 1000+, ':100K' for IDs up to 100K, '100K:1M' for IDs 100K-1M) - colon required")
 
 	// Parse flags

@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -46,21 +47,21 @@ func FormatDuration(d time.Duration) string {
 type MySQLConnector struct{}
 
 func (m *MySQLConnector) Connect(config Config) (*sql.DB, error) {
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true&timeout=2s&readTimeout=2s&writeTimeout=2s",
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true&timeout=30s&readTimeout=60s&writeTimeout=60s",
 		config.User, config.Password, config.Host, config.Port, config.DB)
 	// Note: We can't log the full DSN as it contains the password
 	log.Printf("Connecting to MySQL database: %s@%s:%s/%s", config.User, config.Host, config.Port, config.DB)
-	log.Printf("[DEBUG] DSN: %s:****@tcp(%s:%s)/%s?parseTime=true&timeout=2s&readTimeout=2s&writeTimeout=2s (config.DB=%q)", config.User, config.Host, config.Port, config.DB, config.DB)
+	log.Printf("[DEBUG] DSN: %s:****@tcp(%s:%s)/%s?parseTime=true&timeout=30s&readTimeout=60s&writeTimeout=60s (config.DB=%q)", config.User, config.Host, config.Port, config.DB, config.DB)
 
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
 
-	// Set connection pool settings with short timeouts
-	db.SetConnMaxLifetime(5 * time.Second)
-	db.SetMaxOpenConns(10)
-	db.SetMaxIdleConns(5)
+	// Set connection pool settings with longer timeouts for large datasets
+	db.SetConnMaxLifetime(10 * time.Minute)
+	db.SetMaxOpenConns(20)
+	db.SetMaxIdleConns(10)
 
 	return db, nil
 }
@@ -703,74 +704,92 @@ func (d *DataCleanupService) processBatchPK(db *sql.DB, generator *SchemaAwareGo
 		return 0, 0, nil, nil
 	}
 
-	// Build INSERT ... ON DUPLICATE KEY UPDATE query (much simpler!)
-	// Get all columns (PK + update columns)
-	allColumns := make([]string, 0, len(job.PKCols)+len(job.ValidColumns))
-	allColumns = append(allColumns, job.PKCols...)
+	// Build UPDATE query similar to Python implementation
+	// Format: UPDATE table SET col1=?, col2=? WHERE pk=?
+
+	// Create ordered list of columns to ensure SET clause and arguments match
+	orderedColumns := make([]string, 0, len(job.ValidColumns))
 	for column := range job.ValidColumns {
-		allColumns = append(allColumns, column)
+		orderedColumns = append(orderedColumns, column)
+	}
+	sort.Strings(orderedColumns) // Sort for consistent order
+
+	setClauses := make([]string, 0, len(orderedColumns))
+	for _, column := range orderedColumns {
+		setClauses = append(setClauses, fmt.Sprintf("`%s` = ?", column))
 	}
 
-	// Build column list for INSERT
-	columnList := make([]string, len(allColumns))
-	for i, col := range allColumns {
-		columnList[i] = fmt.Sprintf("`%s`", col)
+	// Build WHERE clause for primary key
+	whereClauses := make([]string, 0, len(job.PKCols))
+	for _, pkCol := range job.PKCols {
+		whereClauses = append(whereClauses, fmt.Sprintf("`%s` = ?", pkCol))
 	}
 
-	// Build VALUES clauses
-	valuesClauses := make([]string, 0, len(rowUpdates))
-	args := make([]interface{}, 0, len(rowUpdates)*len(allColumns))
+	query := fmt.Sprintf("UPDATE `%s`.`%s` SET %s WHERE %s",
+		job.DatabaseName, job.TableName,
+		strings.Join(setClauses, ", "),
+		strings.Join(whereClauses, " AND "))
 
+	// Add exclude clause if specified
+	if job.TableConfig.ExcludeClause != "" {
+		query += fmt.Sprintf(" AND NOT (%s)", job.TableConfig.ExcludeClause)
+	}
+
+	// Prepare the statement for executemany
+	stmt, err := db.Prepare(query)
+	if err != nil {
+		d.logger.Error(fmt.Sprintf("Failed to prepare statement - table: %s, error: %s", job.TableName, err))
+		return 0, len(rowUpdates), nil, fmt.Errorf("failed to prepare statement: %w", err)
+	}
+	defer stmt.Close()
+
+	// Build arguments for executemany (similar to Python's executemany)
+	args := make([][]interface{}, 0, len(rowUpdates))
 	for _, rowUpdate := range rowUpdates {
-		placeholders := make([]string, len(allColumns))
+		rowArgs := make([]interface{}, 0, len(orderedColumns)+len(job.PKCols))
 
-		// Add PK values
-		for i := range job.PKCols {
-			placeholders[i] = "?"
-			args = append(args, rowUpdate.PKValues[i])
-		}
-
-		// Add update column values
-		pkColCount := len(job.PKCols)
-		for i, column := range allColumns[pkColCount:] {
-			placeholders[pkColCount+i] = "?"
+		// Add SET values first (column values) in the same order as SET clause
+		for _, column := range orderedColumns {
 			if val, exists := rowUpdate.ColumnUpdates[column]; exists {
-				args = append(args, val)
+				rowArgs = append(rowArgs, val)
 			} else {
-				// This shouldn't happen with our current logic, but safe fallback
-				args = append(args, nil)
+				rowArgs = append(rowArgs, nil)
 			}
 		}
 
-		valuesClauses = append(valuesClauses, fmt.Sprintf("(%s)", strings.Join(placeholders, ", ")))
+		// Add WHERE values (PK values)
+		rowArgs = append(rowArgs, rowUpdate.PKValues...)
+
+		args = append(args, rowArgs)
 	}
 
-	// Build ON DUPLICATE KEY UPDATE clause
-	updateClauses := make([]string, 0, len(job.ValidColumns))
-	for column := range job.ValidColumns {
-		updateClauses = append(updateClauses, fmt.Sprintf("`%s` = VALUES(`%s`)", column, column))
-	}
-
-	// Build the final query
-	query := fmt.Sprintf("INSERT INTO `%s`.`%s` (%s) VALUES %s ON DUPLICATE KEY UPDATE %s",
-		job.DatabaseName, job.TableName,
-		strings.Join(columnList, ", "),
-		strings.Join(valuesClauses, ", "),
-		strings.Join(updateClauses, ", "))
-
-	// Execute the bulk update
-	result, err := db.Exec(query, args...)
+	// Execute all updates in a transaction for better performance
+	tx, err := db.Begin()
 	if err != nil {
-		d.logger.Error(fmt.Sprintf("Failed to execute bulk update - table: %s, error: %s", job.TableName, err))
-		return 0, len(rowUpdates), nil, fmt.Errorf("database error: %w", err)
+		d.logger.Error(fmt.Sprintf("Failed to begin transaction - table: %s, error: %s", job.TableName, err))
+		return 0, len(rowUpdates), nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 
-	rowsAffected, _ := result.RowsAffected()
-	// INSERT ... ON DUPLICATE KEY UPDATE returns 2 for each updated row, 1 for each inserted row
-	// Since we're updating existing rows, divide by 2 to get actual updated count
-	actualRowsUpdated := int(rowsAffected)
-	if rowsAffected > int64(len(rowUpdates)) {
-		actualRowsUpdated = int(rowsAffected / 2)
+	// Use prepared statement within transaction
+	txStmt := tx.Stmt(stmt)
+	defer txStmt.Close()
+
+	var totalRowsAffected int64
+	for _, rowArgs := range args {
+		result, err := txStmt.Exec(rowArgs...)
+		if err != nil {
+			tx.Rollback()
+			d.logger.Error(fmt.Sprintf("Failed to execute update - table: %s, error: %s", job.TableName, err))
+			return 0, len(rowUpdates), nil, fmt.Errorf("database error: %w", err)
+		}
+		rowsAffected, _ := result.RowsAffected()
+		totalRowsAffected += rowsAffected
+	}
+
+	// Commit transaction
+	if err := tx.Commit(); err != nil {
+		d.logger.Error(fmt.Sprintf("Failed to commit transaction - table: %s, error: %s", job.TableName, err))
+		return 0, len(rowUpdates), nil, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	// Collect sample data for debug logging (only the last row)
@@ -787,7 +806,7 @@ func (d *DataCleanupService) processBatchPK(db *sql.DB, generator *SchemaAwareGo
 		})
 	}
 
-	return actualRowsUpdated, 0, sampleData, nil
+	return int(totalRowsAffected), 0, sampleData, nil
 }
 
 // formatSampleData formats sample row data for debug logging
@@ -1120,13 +1139,18 @@ func (g *SchemaAwareGofakeitGenerator) generateBasicFakeValue(fakerType string) 
 	case "random_postalcode":
 		return g.faker.Zip(), nil
 	case "random_phone_short":
-		return g.faker.Phone(), nil
+		// Generate a shorter phone number format (10-15 digits)
+		areaCode := g.faker.Number(100, 999)
+		prefix := g.faker.Number(100, 999)
+		line := g.faker.Number(1000, 9999)
+		return fmt.Sprintf("%d-%d-%d", areaCode, prefix, line), nil
 	case "random_username":
 		return g.faker.Username(), nil
 	case "random_id":
 		return g.faker.UUID(), nil
 	case "random_text":
-		return g.faker.Sentence(10), nil
+		// Generate shorter text (1-3 sentences instead of 10)
+		return g.faker.Sentence(3), nil
 	case "random_word":
 		return g.faker.Word(), nil
 	case "random_email_subject":
