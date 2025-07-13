@@ -235,6 +235,8 @@ You can save logs to a file in addition to console output using the `-log-file` 
 - Includes progress updates and ETA calculations
 - Can be used with log analysis tools
 
+**Note:** Log files are appended to, not overwritten. Each run adds to the existing file, preserving the history of all operations. To start fresh, delete the log file before running or use a different filename.
+
 ## Example Output
 
 ### Normal Mode (Info level)

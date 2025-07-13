@@ -103,7 +103,26 @@ func main() {
 	service := createService(config.Debug, config.Workers, config.BatchSize, config.LogFile)
 	service.logger.Debug("Service created successfully")
 
-	// Output the provided arguments
+	// Log command line options (with password masked)
+	service.logger.Info("Command line options:")
+	service.logger.Info(fmt.Sprintf("  Host: %s", config.Host))
+	service.logger.Info(fmt.Sprintf("  User: %s", config.User))
+	service.logger.Info(fmt.Sprintf("  Port: %s", config.Port))
+	service.logger.Info(fmt.Sprintf("  Password: %s", maskPassword(config.Password)))
+	service.logger.Info(fmt.Sprintf("  Database: %s", config.DB))
+	if config.AllTables {
+		service.logger.Info("  Mode: All tables")
+	} else {
+		service.logger.Info(fmt.Sprintf("  Table: %s", config.Table))
+	}
+	service.logger.Info(fmt.Sprintf("  Workers: %d", config.Workers))
+	service.logger.Info(fmt.Sprintf("  Batch size: %s", config.BatchSize))
+	service.logger.Info(fmt.Sprintf("  Range: %s", config.Range))
+	service.logger.Info(fmt.Sprintf("  Config file: %s", config.Config))
+	service.logger.Info(fmt.Sprintf("  Log file: %s", config.LogFile))
+	service.logger.Info(fmt.Sprintf("  Debug mode: %t", config.Debug))
+
+	// Output the provided arguments (debug mode)
 	service.logger.Debug("MySQL Cleanup CLI")
 	service.logger.Debug("==================")
 	service.logger.Debug(fmt.Sprintf("Configuration - host: %s, user: %s, port: %s, password: %s, config: %s, database: %s, range: %s",
