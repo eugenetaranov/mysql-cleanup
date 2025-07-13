@@ -1345,6 +1345,97 @@ func (z *ZapLogger) convertFields(fields []Field) []zap.Field {
 	return zapFields
 }
 
+// MultiLogger implements Logger that writes to both console and file
+type MultiLogger struct {
+	consoleLogger Logger
+	fileLogger    Logger
+}
+
+func NewMultiLogger(consoleLogger Logger, fileLogger Logger) *MultiLogger {
+	return &MultiLogger{
+		consoleLogger: consoleLogger,
+		fileLogger:    fileLogger,
+	}
+}
+
+func (m *MultiLogger) Printf(format string, args ...interface{}) {
+	m.consoleLogger.Printf(format, args...)
+	m.fileLogger.Printf(format, args...)
+}
+
+func (m *MultiLogger) Println(args ...interface{}) {
+	m.consoleLogger.Println(args...)
+	m.fileLogger.Println(args...)
+}
+
+func (m *MultiLogger) Debug(msg string, fields ...Field) {
+	m.consoleLogger.Debug(msg, fields...)
+	m.fileLogger.Debug(msg, fields...)
+}
+
+func (m *MultiLogger) Info(msg string, fields ...Field) {
+	m.consoleLogger.Info(msg, fields...)
+	m.fileLogger.Info(msg, fields...)
+}
+
+func (m *MultiLogger) Warn(msg string, fields ...Field) {
+	m.consoleLogger.Warn(msg, fields...)
+	m.fileLogger.Warn(msg, fields...)
+}
+
+func (m *MultiLogger) Error(msg string, fields ...Field) {
+	m.consoleLogger.Error(msg, fields...)
+	m.fileLogger.Error(msg, fields...)
+}
+
+func (m *MultiLogger) With(fields ...Field) Logger {
+	return &MultiLogger{
+		consoleLogger: m.consoleLogger.With(fields...),
+		fileLogger:    m.fileLogger.With(fields...),
+	}
+}
+
+// FileLogger implements Logger that writes to a file
+type FileLogger struct {
+	file *os.File
+}
+
+func NewFileLogger(filename string) (*FileLogger, error) {
+	file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open log file: %w", err)
+	}
+	return &FileLogger{file: file}, nil
+}
+
+func (f *FileLogger) Printf(format string, args ...interface{}) {
+	fmt.Fprintf(f.file, format, args...)
+}
+
+func (f *FileLogger) Println(args ...interface{}) {
+	fmt.Fprintln(f.file, args...)
+}
+
+func (f *FileLogger) Debug(msg string, fields ...Field) {
+	fmt.Fprintf(f.file, "[DEBUG] %s\n", msg)
+}
+
+func (f *FileLogger) Info(msg string, fields ...Field) {
+	fmt.Fprintf(f.file, "[INFO] %s\n", msg)
+}
+
+func (f *FileLogger) Warn(msg string, fields ...Field) {
+	fmt.Fprintf(f.file, "[WARN] %s\n", msg)
+}
+
+func (f *FileLogger) Error(msg string, fields ...Field) {
+	fmt.Fprintf(f.file, "[ERROR] %s\n", msg)
+}
+
+func (f *FileLogger) With(fields ...Field) Logger {
+	return f // FileLogger doesn't support structured logging
+}
+
 // StdLogger implements Logger (kept for backward compatibility)
 type StdLogger struct{}
 

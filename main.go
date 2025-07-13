@@ -24,15 +24,32 @@ type Config struct {
 	Workers   int
 	BatchSize string // Batch size for updates (e.g., "1", "1K", "10K", "100K" - supports K/M/B suffixes)
 	Range     string // ID range specification (e.g., "0:1000", "1000:", ":100K", "100K:1M" - colon required)
+	LogFile   string // Log file path for saving logs
 }
 
 // createService creates and wires up all dependencies
-func createService(debug bool, workers int, batchSizeStr string) *Service {
+func createService(debug bool, workers int, batchSizeStr string, logFile string) *Service {
 	batchSize, _ := parseHumanizedBatchSize(batchSizeStr)
 	// Create concrete implementations
 	dbConnector := &MySQLConnector{}
 	fileReader := &OSFileReader{}
-	logger := &StdLogger{} // Use simple logger without stack traces
+
+	// Create logger based on log file option
+	var logger Logger
+	if logFile != "" {
+		// Create multi-logger that writes to both console and file
+		consoleLogger := &StdLogger{}
+		fileLogger, err := NewFileLogger(logFile)
+		if err != nil {
+			log.Printf("Failed to create file logger: %v, falling back to console only", err)
+			logger = consoleLogger
+		} else {
+			logger = NewMultiLogger(consoleLogger, fileLogger)
+		}
+	} else {
+		logger = &StdLogger{} // Use simple logger without stack traces
+	}
+
 	s3Handler := NewS3Handler(logger)
 	configParser := NewYAMLConfigParser(fileReader, s3Handler, logger)
 	fakeGenerator := NewGofakeitGenerator() // Use constructor instead of &GofakeitGenerator{}
@@ -77,12 +94,13 @@ func main() {
 	flag.IntVar(&config.Workers, "workers", 10, "Number of worker goroutines (default: 10)")
 	flag.StringVar(&config.BatchSize, "batch-size", "1K", "Batch size for updates (e.g., '1', '1K', '10K', '100K' - supports K/M/B suffixes)")
 	flag.StringVar(&config.Range, "range", "", "ID range to process (e.g., '0:1000' for IDs 0-1000, '1000:' for IDs 1000+, ':100K' for IDs up to 100K, '100K:1M' for IDs 100K-1M) - colon required")
+	flag.StringVar(&config.LogFile, "log-file", "", "Log file path for saving logs (optional)")
 
 	// Parse flags
 	flag.Parse()
 
 	// Create service with all dependencies
-	service := createService(config.Debug, config.Workers, config.BatchSize)
+	service := createService(config.Debug, config.Workers, config.BatchSize, config.LogFile)
 	service.logger.Debug("Service created successfully")
 
 	// Output the provided arguments

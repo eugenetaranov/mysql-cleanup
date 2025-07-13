@@ -77,6 +77,7 @@ cp env.example .env
 | `-workers` | (none) | 1 | Number of worker goroutines for parallel processing |
 | `-batch-size` | (none) | "1" | Batch size for updates (e.g., "1", "1K", "10K", "100K" - supports K/M/B suffixes) |
 | `-range` | (none) | (empty) | ID range to process (e.g., '0:1000', '1000:', ':100K', '100K:1M'; colon required; supports K/M/B suffixes) |
+| `-log-file` | (none) | (empty) | Log file path for saving logs (optional) |
 
 ## Range Filtering
 
@@ -209,6 +210,30 @@ Debug mode shows:
 - SQL query execution
 - Row-by-row processing details
 - YAML configuration parsing
+
+### Log File Output
+
+You can save logs to a file in addition to console output using the `-log-file` parameter:
+
+```bash
+# Save logs to a file
+./bin/mysql_cleanup -host=localhost -user=root -db=mydb -table=mytable -log-file=cleanup.log
+
+# Save logs with debug mode
+./bin/mysql_cleanup -host=localhost -user=root -db=mydb -table=mytable -debug -log-file=debug.log
+```
+
+**Benefits of log files:**
+- Persistent record of operations for auditing
+- Easier troubleshooting of long-running processes
+- Can be analyzed later for performance metrics
+- Useful for batch processing and automation
+
+**Log file format:**
+- Contains all console output including timestamps
+- Preserves log levels (Info, Debug, Warn, Error)
+- Includes progress updates and ETA calculations
+- Can be used with log analysis tools
 
 ## Example Output
 
