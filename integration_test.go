@@ -153,7 +153,7 @@ func TestFakerDataChanges(t *testing.T) {
 		AllTables: true, // Run in all-tables mode
 	}
 
-	service := createService(false, 0, 0) // Use auto-detection for workers and batch size
+	service := createService(false, 0, "5") // Use auto-detection for workers and batch size
 	_, err = service.dataCleaner.CleanupData(config)
 	if err != nil {
 		t.Fatalf("Failed to run faker: %v", err)
@@ -259,7 +259,7 @@ func TestParallelWorkers(t *testing.T) {
 		Config:    "tests/config.yaml", // This won't be used by our custom parser
 		Table:     "parallel_test_table",
 		Workers:   4,
-		BatchSize: 5,
+		BatchSize: "5",
 	}
 
 	startTime := time.Now()
@@ -348,7 +348,7 @@ func TestLargeBatches(t *testing.T) {
 		Config:    "tests/config.yaml",
 		Table:     "batch_test_table",
 		Workers:   4,
-		BatchSize: 50,
+		BatchSize: "50",
 	}
 
 	startTime := time.Now()
@@ -403,12 +403,12 @@ func TestPerformanceComparison(t *testing.T) {
 		Config:    "tests/config.yaml",
 		Table:     "performance_test_table",
 		Workers:   1,
-		BatchSize: 1,
+		BatchSize: "1",
 	}
 
 	// Test 1: Single worker, small batch
 	t.Log("Testing single worker, small batch...")
-	singleWorkerService := createTestService(db, config.Workers, config.BatchSize)
+	singleWorkerService := createTestService(db, config.Workers, "1")
 	startTime1 := time.Now()
 	_, err = singleWorkerService.dataCleaner.CleanupData(config)
 	if err != nil {
@@ -424,8 +424,8 @@ func TestPerformanceComparison(t *testing.T) {
 	// Test 2: Multiple workers, larger batch
 	t.Log("Testing multiple workers, larger batch...")
 	config.Workers = 4
-	config.BatchSize = 20
-	multiWorkerService := createTestService(db, config.Workers, config.BatchSize)
+	config.BatchSize = "20"
+	multiWorkerService := createTestService(db, config.Workers, "20")
 	startTime2 := time.Now()
 	_, err = multiWorkerService.dataCleaner.CleanupData(config)
 	if err != nil {
@@ -451,7 +451,7 @@ func TestPerformanceComparison(t *testing.T) {
 }
 
 // createTestService is a helper to create a service for testing
-func createTestService(db *sql.DB, workers, batchSize int) *Service {
+func createTestService(db *sql.DB, workers int, batchSizeStr string) *Service {
 	logger := NewZapLogger(false) // Disable verbose logging for performance tests
 	testConnector := &TestContainerConnector{db: db}
 	customConfigParser := &CustomTestConfigParser{
@@ -461,10 +461,11 @@ func createTestService(db *sql.DB, workers, batchSize int) *Service {
 			"email":   "random_email",
 			"address": "random_address",
 			"phone":   "random_phone_short",
-			"status":  "random_text", // Fixed: use "status" instead of non-existent "notes"
+			"status":  "random_text",
 		},
 	}
 	schemaAwareGenerator := NewSchemaAwareGofakeitGenerator(logger)
+	parsedBatchSize, _ := parseHumanizedBatchSize(batchSizeStr)
 	return &Service{
 		dataCleaner: NewDataCleanupService(
 			testConnector,
@@ -473,7 +474,7 @@ func createTestService(db *sql.DB, workers, batchSize int) *Service {
 			schemaAwareGenerator,
 			logger,
 			workers,
-			batchSize,
+			parsedBatchSize,
 		),
 	}
 }
@@ -515,7 +516,7 @@ func TestErrorHandlingInParallel(t *testing.T) {
 		Config:    "tests/config.yaml",
 		Table:     "error_test_table",
 		Workers:   4,
-		BatchSize: 5,
+		BatchSize: "5",
 	}
 
 	// Create a custom database connector that uses the test container connection
@@ -1033,7 +1034,7 @@ func TestEdgeCaseZeroRows(t *testing.T) {
 		Config:    "tests/config.yaml",
 		Table:     "edge_case_zero_rows",
 		Workers:   2,
-		BatchSize: 10,
+		BatchSize: "10",
 	}
 
 	// This should run without errors
@@ -1104,7 +1105,7 @@ func TestEdgeCaseBatchLargerThanRows(t *testing.T) {
 		Config:    "tests/config.yaml",
 		Table:     "edge_case_small_table",
 		Workers:   2,
-		BatchSize: 20,
+		BatchSize: "20",
 	}
 
 	// This should run without errors
@@ -1175,7 +1176,7 @@ func TestEdgeCaseBatchSizeOne(t *testing.T) {
 		Config:    "tests/config.yaml",
 		Table:     "edge_case_batch_size_one",
 		Workers:   4,
-		BatchSize: 1,
+		BatchSize: "1",
 	}
 
 	// This should run without errors
@@ -1260,7 +1261,7 @@ func TestNonIdPrimaryKey(t *testing.T) {
 		Config:    "tests/config.yaml",
 		Table:     tableName,
 		Workers:   2,
-		BatchSize: 5,
+		BatchSize: "5",
 	}
 
 	// This should run without errors
@@ -1370,7 +1371,7 @@ func TestCompositePrimaryKey(t *testing.T) {
 		Config:    "tests/config.yaml",
 		Table:     tableName,
 		Workers:   2,
-		BatchSize: 5,
+		BatchSize: "5",
 	}
 
 	// This should run without errors
@@ -1463,7 +1464,7 @@ func TestRangeAffectsOnlySpecifiedRows(t *testing.T) {
 		Range:    "2:5",
 	}
 
-	service := createService(false, 0, 0)
+	service := createService(false, 0, "5")
 	_, err = service.dataCleaner.CleanupData(config)
 	if err != nil {
 		t.Fatalf("Failed to run cleanup with range: %v", err)

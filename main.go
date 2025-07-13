@@ -27,7 +27,8 @@ type Config struct {
 }
 
 // createService creates and wires up all dependencies
-func createService(debug bool, workers, batchSize int) *Service {
+func createService(debug bool, workers int, batchSizeStr string) *Service {
+	batchSize, _ := parseHumanizedBatchSize(batchSizeStr)
 	// Create concrete implementations
 	dbConnector := &MySQLConnector{}
 	fileReader := &OSFileReader{}
@@ -80,14 +81,8 @@ func main() {
 	// Parse flags
 	flag.Parse()
 
-	// Parse humanized batch size
-	batchSize, err := parseHumanizedBatchSize(config.BatchSize)
-	if err != nil {
-		log.Fatalf("Invalid batch size: %v", err)
-	}
-
 	// Create service with all dependencies
-	service := createService(config.Debug, config.Workers, batchSize)
+	service := createService(config.Debug, config.Workers, config.BatchSize)
 	service.logger.Debug("Service created successfully")
 
 	// Output the provided arguments

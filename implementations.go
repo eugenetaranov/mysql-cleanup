@@ -1387,12 +1387,15 @@ func (d *DataCleanupService) processTableWithRange(db *sql.DB, databaseName, tab
 		selectCols += fmt.Sprintf("`%s`", col)
 	}
 	selectQuery := fmt.Sprintf("SELECT %s FROM `%s`.`%s` %s", selectCols, databaseName, tableName, whereClause)
-	d.logger.Debug(fmt.Sprintf("Executing select query - query: %s", selectQuery))
+	d.logger.Info(fmt.Sprintf("Executing select query - query: %s", selectQuery))
+	startTime := time.Now()
 	rows, err := db.Query(selectQuery)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get rows to update: %w", err)
 	}
 	defer rows.Close()
+	queryDuration := time.Since(startTime)
+	d.logger.Info(fmt.Sprintf("Select query completed - table: %s, duration: %s", tableName, FormatDuration(queryDuration)))
 
 	// Collect PK values for each row
 	var pkValues [][]interface{}
