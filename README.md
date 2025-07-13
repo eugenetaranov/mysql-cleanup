@@ -75,7 +75,7 @@ cp env.example .env
 | `-all-tables` | (none) | false | Process all tables (required for all tables mode) |
 | `-debug` | (none) | false | Enable debug logging |
 | `-workers` | (none) | 1 | Number of worker goroutines for parallel processing |
-| `-batch-size` | (none) | 1 | Batch size for bulk database operations |
+| `-batch-size` | (none) | "1" | Batch size for updates (e.g., "1", "1K", "10K", "100K" - supports K/M/B suffixes) |
 | `-range` | (none) | (empty) | ID range to process (e.g., '0:1000', '1000:', ':100K', '100K:1M'; colon required; supports K/M/B suffixes) |
 
 ## Range Filtering
@@ -110,6 +110,38 @@ You can limit processing to a specific range of primary key IDs using the `-rang
 ./bin/mysql_cleanup -db=mydb -table=mytable
 ```
 
+## Humanized Batch Sizes
+
+You can specify batch sizes using humanized formats for easier configuration of large batch operations.
+
+**Syntax:**
+- `-batch-size 1` — Process 1 row per batch
+- `-batch-size 100` — Process 100 rows per batch
+- `-batch-size 1K` — Process 1,000 rows per batch
+- `-batch-size 10K` — Process 10,000 rows per batch
+- `-batch-size 100K` — Process 100,000 rows per batch
+- `-batch-size 1M` — Process 1,000,000 rows per batch
+
+**Notes:**
+- You can use `K` (thousand), `M` (million), or `B` (billion) suffixes (case-insensitive).
+- The batch size must be positive.
+- Larger batch sizes can improve performance but use more memory.
+
+**Examples:**
+```bash
+# Small batches for testing
+./bin/mysql_cleanup -db=mydb -table=mytable -batch-size 10
+
+# Medium batches for production
+./bin/mysql_cleanup -db=mydb -table=mytable -batch-size 1K
+
+# Large batches for high-performance processing
+./bin/mysql_cleanup -db=mydb -table=mytable -batch-size 10K
+
+# Very large batches for massive datasets
+./bin/mysql_cleanup -db=mydb -table=mytable -batch-size 100K
+```
+
 ## Priority Order
 
 1. Command line arguments (highest priority)
@@ -135,7 +167,10 @@ The application supports parallel processing with configurable workers and batch
 ./bin/mysql_cleanup -host=localhost -user=root -db=mydb -table=mytable -workers=4 -batch-size=10
 
 # High-performance with large batches
-./bin/mysql_cleanup -host=localhost -user=root -db=mydb -table=mytable -workers=4 -batch-size=100
+./bin/mysql_cleanup -host=localhost -user=root -db=mydb -table=mytable -workers=4 -batch-size=1K
+
+# Very high-performance with very large batches
+./bin/mysql_cleanup -host=localhost -user=root -db=mydb -table=mytable -workers=8 -batch-size=10K
 ```
 
 ### Performance Optimization

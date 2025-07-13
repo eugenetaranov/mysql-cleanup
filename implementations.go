@@ -692,19 +692,18 @@ func (d *DataCleanupService) processBatchPK(db *sql.DB, generator *SchemaAwareGo
 		actualRowsUpdated = int(rowsAffected / 2)
 	}
 
-	// Collect sample data for debug logging (first and last few rows)
+	// Collect sample data for debug logging (only the last row)
 	var sampleData []SampleRowData
-	for i, rowUpdate := range rowUpdates {
-		if i < 2 || i >= len(rowUpdates)-2 { // First 2 and last 2 rows
-			pkValues := make(map[string]interface{})
-			for j, col := range job.PKCols {
-				pkValues[col] = rowUpdate.PKValues[j]
-			}
-			sampleData = append(sampleData, SampleRowData{
-				PKValues:       pkValues,
-				UpdatedColumns: rowUpdate.ColumnUpdates,
-			})
+	if len(rowUpdates) > 0 {
+		lastRow := rowUpdates[len(rowUpdates)-1]
+		pkValues := make(map[string]interface{})
+		for j, col := range job.PKCols {
+			pkValues[col] = lastRow.PKValues[j]
 		}
+		sampleData = append(sampleData, SampleRowData{
+			PKValues:       pkValues,
+			UpdatedColumns: lastRow.ColumnUpdates,
+		})
 	}
 
 	return actualRowsUpdated, 0, sampleData
@@ -716,35 +715,28 @@ func (d *DataCleanupService) formatSampleData(sampleData []SampleRowData) string
 		return "no sample data"
 	}
 
-	var parts []string
-	for i, sample := range sampleData {
-		if i >= 4 { // Show max 4 sample rows to avoid too much logging
-			parts = append(parts, "...")
-			break
-		}
+	// Only show the last sample row
+	sample := sampleData[len(sampleData)-1]
 
-		pkStr := ""
-		for col, val := range sample.PKValues {
-			if pkStr != "" {
-				pkStr += ", "
-			}
-			pkStr += fmt.Sprintf("%s:%v", col, val)
+	pkStr := ""
+	for col, val := range sample.PKValues {
+		if pkStr != "" {
+			pkStr += ", "
 		}
-
-		updateStr := ""
-		for col, val := range sample.UpdatedColumns {
-			if updateStr != "" {
-				updateStr += ", "
-			}
-			// Show complete values to verify uniqueness
-			valStr := fmt.Sprintf("%v", val)
-			updateStr += fmt.Sprintf("%s:'%s'", col, valStr)
-		}
-
-		parts = append(parts, fmt.Sprintf("[PK:{%s} -> {%s}]", pkStr, updateStr))
+		pkStr += fmt.Sprintf("%s:%v", col, val)
 	}
 
-	return strings.Join(parts, ", ")
+	updateStr := ""
+	for col, val := range sample.UpdatedColumns {
+		if updateStr != "" {
+			updateStr += ", "
+		}
+		// Show complete values to verify uniqueness
+		valStr := fmt.Sprintf("%v", val)
+		updateStr += fmt.Sprintf("%s:'%s'", col, valStr)
+	}
+
+	return fmt.Sprintf("[PK:{%s} -> {%s}]", pkStr, updateStr)
 }
 
 // recordBatchTime records a batch completion time for a worker

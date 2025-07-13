@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/joho/godotenv"
@@ -21,7 +22,7 @@ type Config struct {
 	AllTables bool
 	Debug     bool
 	Workers   int
-	BatchSize int
+	BatchSize string // Batch size for updates (e.g., "1", "1K", "10K", "100K" - supports K/M/B suffixes)
 	Range     string // ID range specification (e.g., "0:1000", "1000:", ":100K", "100K:1M" - colon required)
 }
 
@@ -64,7 +65,7 @@ func main() {
 	var config Config
 
 	flag.StringVar(&config.Host, "host", getEnvWithDefault("HOST", "localhost"), "Database host")
-	flag.StringVar(&config.User, "user", getEnvWithDefault("USER", "root"), "Database user")
+	flag.StringVar(&config.User, "user", getEnvWithDefault("USER", ""), "Database user")
 	flag.StringVar(&config.Port, "port", getEnvWithDefault("PORT", "3306"), "Database port")
 	flag.StringVar(&config.Password, "password", getEnvWithDefault("PASSWORD", ""), "Database password")
 	flag.StringVar(&config.Config, "config", getEnvWithDefault("CONFIG", ""), "Configuration file path")
@@ -73,14 +74,20 @@ func main() {
 	flag.BoolVar(&config.AllTables, "all-tables", false, "Process all tables in the database")
 	flag.BoolVar(&config.Debug, "debug", false, "Enable debug logging")
 	flag.IntVar(&config.Workers, "workers", 1, "Number of worker goroutines (default: 1)")
-	flag.IntVar(&config.BatchSize, "batch-size", 1, "Batch size for updates (default: 1)")
+	flag.StringVar(&config.BatchSize, "batch-size", "1", "Batch size for updates (e.g., '1', '1K', '10K', '100K' - supports K/M/B suffixes)")
 	flag.StringVar(&config.Range, "range", "", "ID range to process (e.g., '0:1000' for IDs 0-1000, '1000:' for IDs 1000+, ':100K' for IDs up to 100K, '100K:1M' for IDs 100K-1M) - colon required")
 
 	// Parse flags
 	flag.Parse()
 
+	// Parse humanized batch size
+	batchSize, err := parseHumanizedBatchSize(config.BatchSize)
+	if err != nil {
+		log.Fatalf("Invalid batch size: %v", err)
+	}
+
 	// Create service with all dependencies
-	service := createService(config.Debug, config.Workers, config.BatchSize)
+	service := createService(config.Debug, config.Workers, batchSize)
 	service.logger.Debug("Service created successfully")
 
 	// Output the provided arguments
@@ -107,6 +114,11 @@ func main() {
 		service.logger.Debug("Validating arguments")
 		if config.DB == "" {
 			service.logger.Error("Error: -db argument is required")
+			os.Exit(1)
+		}
+
+		if config.User == "" {
+			service.logger.Error("Error: -user argument is required")
 			os.Exit(1)
 		}
 
@@ -162,4 +174,40 @@ func maskPassword(password string) string {
 		return "<empty>"
 	}
 	return "********"
+}
+
+// parseHumanizedBatchSize parses batch sizes with K, M, B suffixes (e.g., "1K" = 1000)
+func parseHumanizedBatchSize(batchSizeStr string) (int, error) {
+	batchSizeStr = strings.TrimSpace(batchSizeStr)
+	if batchSizeStr == "" {
+		return 0, fmt.Errorf("empty batch size")
+	}
+
+	// Handle suffixes
+	multiplier := 1
+	upperStr := strings.ToUpper(batchSizeStr)
+
+	if strings.HasSuffix(upperStr, "K") {
+		multiplier = 1000
+		batchSizeStr = batchSizeStr[:len(batchSizeStr)-1]
+	} else if strings.HasSuffix(upperStr, "M") {
+		multiplier = 1000000
+		batchSizeStr = batchSizeStr[:len(batchSizeStr)-1]
+	} else if strings.HasSuffix(upperStr, "B") {
+		multiplier = 1000000000
+		batchSizeStr = batchSizeStr[:len(batchSizeStr)-1]
+	}
+
+	// Parse the base number
+	baseNum, err := strconv.Atoi(batchSizeStr)
+	if err != nil {
+		return 0, fmt.Errorf("invalid batch size format: %s", batchSizeStr)
+	}
+
+	result := baseNum * multiplier
+	if result <= 0 {
+		return 0, fmt.Errorf("batch size must be positive")
+	}
+
+	return result, nil
 }

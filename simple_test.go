@@ -130,6 +130,54 @@ func TestParseHumanizedRange(t *testing.T) {
 	}
 }
 
+func TestParseHumanizedBatchSize(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected int
+		hasError bool
+	}{
+		// Valid humanized batch sizes
+		{"1", 1, false},
+		{"100", 100, false},
+		{"1K", 1000, false},
+		{"10K", 10000, false},
+		{"100K", 100000, false},
+		{"1M", 1000000, false},
+		{"10M", 10000000, false},
+		{"1B", 1000000000, false},
+		{"10B", 10000000000, false},
+
+		// Case insensitive
+		{"1k", 1000, false},
+		{"1m", 1000000, false},
+		{"1b", 1000000000, false},
+
+		// Edge cases
+		{"0", 0, true},       // Must be positive
+		{"-1", 0, true},      // Must be positive
+		{"", 0, true},        // Empty
+		{"invalid", 0, true}, // Invalid format
+		{"1K2", 0, true},     // Invalid format
+		{"K1", 0, true},      // Invalid format
+	}
+
+	for _, test := range tests {
+		result, err := parseHumanizedBatchSize(test.input)
+
+		if test.hasError {
+			if err == nil {
+				t.Errorf("Expected error for input '%s', but got none", test.input)
+			}
+		} else {
+			if err != nil {
+				t.Errorf("Unexpected error for input '%s': %v", test.input, err)
+			} else if result != test.expected {
+				t.Errorf("For input '%s', expected %d, got %d", test.input, test.expected, result)
+			}
+		}
+	}
+}
+
 func int64Ptr(val int64) *int64 {
 	return &val
 }
