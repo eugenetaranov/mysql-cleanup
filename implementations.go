@@ -470,7 +470,6 @@ func (d *DataCleanupService) processBatchesInParallelPK(db *sql.DB, databaseName
 	d.resetWorkerBatchTimes()
 
 	batches := d.createBatchesPK(pkValues, d.batchProcessor.batchSize)
-
 	jobChan := make(chan BatchJob, len(batches))
 	resultChan := make(chan BatchResult, len(batches))
 
@@ -481,14 +480,10 @@ func (d *DataCleanupService) processBatchesInParallelPK(db *sql.DB, databaseName
 	var wg sync.WaitGroup
 	for i := 0; i < d.batchProcessor.workerCount; i++ {
 		wg.Add(1)
-		// Each worker gets its own schema-aware generator with a truly unique seed
-		// Combine multiple factors to ensure unique seeds: time + worker ID + random component
 		uniqueSeed := time.Now().UnixNano() + int64(i*1000000) + rand.Int63()
 		workerGenerator := NewSchemaAwareGofakeitGenerator(d.logger)
 		workerGenerator.faker = gofakeit.New(uniqueSeed)
 		go d.workerPKWithContext(ctx, i, db, workerGenerator, jobChan, resultChan, &wg)
-
-		// Small delay to ensure different timestamps for each worker
 		time.Sleep(time.Microsecond)
 	}
 
@@ -497,9 +492,8 @@ func (d *DataCleanupService) processBatchesInParallelPK(db *sql.DB, databaseName
 		for batchIndex, batch := range batches {
 			select {
 			case <-ctx.Done():
-				return // Context cancelled, stop sending jobs
+				return
 			default:
-				// Calculate row range from the first and last PK values in the batch
 				rowRange := "empty"
 				if len(batch) > 0 {
 					firstPK := batch[0][0]
@@ -510,7 +504,6 @@ func (d *DataCleanupService) processBatchesInParallelPK(db *sql.DB, databaseName
 						rowRange = fmt.Sprintf("%v-%v", firstPK, lastPK)
 					}
 				}
-
 				select {
 				case jobChan <- BatchJob{
 					DatabaseName: databaseName,
@@ -519,13 +512,13 @@ func (d *DataCleanupService) processBatchesInParallelPK(db *sql.DB, databaseName
 					PKValues:     batch,
 					TableConfig:  tableConfig,
 					ValidColumns: validColumns,
-					BatchNumber:  batchIndex + 1, // 1-based batch numbering
-					TotalBatches: len(batches),   // Total number of batches for percentage calculation
-					WorkerID:     -1,             // Will be set by worker
+					BatchNumber:  batchIndex + 1,
+					TotalBatches: len(batches),
+					WorkerID:     -1,
 					RowRange:     rowRange,
 				}:
 				case <-ctx.Done():
-					return // Context cancelled, stop sending jobs
+					return
 				}
 			}
 		}
@@ -538,47 +531,77 @@ func (d *DataCleanupService) processBatchesInParallelPK(db *sql.DB, databaseName
 
 	totalProcessed := 0
 	totalErrors := 0
+	totalBatches := len(batches)
+	completedBatches := 0
+	totalBatchDuration := time.Duration(0)
+
 	for result := range resultChan {
 		totalProcessed += result.ProcessedCount
 		totalErrors += result.ErrorCount
+		completedBatches++
+		totalBatchDuration += result.Duration
 
-		// Check for critical database errors that should cause the entire operation to fail
 		if len(result.Errors) > 0 {
-			// Cancel context to stop all workers immediately
 			cancel()
 			d.logger.Error(fmt.Sprintf("Database error detected - cancelling all workers and failing operation - batch: %d, error: %v", result.BatchNumber, result.Errors[0]))
-			// If any batch had a database error, fail the entire operation
 			return totalProcessed, totalErrors, fmt.Errorf("database error in batch %d: %v", result.BatchNumber, result.Errors[0])
 		}
 
-		// Record batch time for ETA calculation
-		d.recordBatchTime(result.WorkerID, result.Duration)
-
-		// Calculate percentage completion and ETA
-		percentage := float64(result.BatchNumber) / float64(result.TotalBatches) * 100
-		eta := d.calculateETA(result.WorkerID, result.BatchNumber, result.TotalBatches)
-
-		if result.ErrorCount > 0 {
-			d.logger.Warn(fmt.Sprintf("Worker %d batch %d/%d had errors - table: %s, row_range: %s, processed: %d, errors: %d, duration: %s, progress: %.1f%%, %s",
-				result.WorkerID, result.BatchNumber, result.TotalBatches, result.TableName, result.RowRange, result.ProcessedCount, result.ErrorCount, FormatDuration(result.Duration), percentage, eta))
-		} else {
-			// Log sample data at debug level first
-			if len(result.SampleData) > 0 {
-				d.logger.Debug(fmt.Sprintf("Worker %d batch %d/%d sample data - table: %s, sample_rows: %s",
-					result.WorkerID, result.BatchNumber, result.TotalBatches, result.TableName, d.formatSampleData(result.SampleData)))
-			}
-			d.logger.Info(fmt.Sprintf("Worker %d batch %d/%d completed - table: %s, row_range: %s, processed: %d, duration: %s, progress: %.1f%%, %s",
-				result.WorkerID, result.BatchNumber, result.TotalBatches, result.TableName, result.RowRange, result.ProcessedCount, FormatDuration(result.Duration), percentage, eta))
+		// Log sample data at debug level
+		if len(result.SampleData) > 0 {
+			d.logger.Debug(fmt.Sprintf("Batch %d/%d sample data - table: %s, sample_rows: %s",
+				result.BatchNumber, totalBatches, result.TableName, d.formatSampleData(result.SampleData)))
 		}
+
+		// Global percent and ETA with improved calculation
+		globalPercent := float64(completedBatches) / float64(totalBatches) * 100
+
+		// Track individual batch times for better ETA calculation
+		d.recordBatchTime(0, result.Duration) // Use worker 0 as global tracker
+
+		// Calculate ETA using recent batch times (last 10 batches)
+		avgBatchTime := time.Duration(0)
+		if completedBatches > 0 {
+			// Get recent batch times for more accurate ETA
+			d.workerTimesMutex.RLock()
+			recentTimes := d.workerBatchTimes[0] // Global batch times
+			d.workerTimesMutex.RUnlock()
+
+			if len(recentTimes) > 0 {
+				// Use average of last 10 batches, or all if less than 10
+				startIdx := 0
+				if len(recentTimes) > 10 {
+					startIdx = len(recentTimes) - 10
+				}
+
+				var totalTime time.Duration
+				count := 0
+				for i := startIdx; i < len(recentTimes); i++ {
+					totalTime += recentTimes[i]
+					count++
+				}
+
+				if count > 0 {
+					avgBatchTime = totalTime / time.Duration(count)
+				}
+			}
+
+			// Fallback to simple average if no recent times
+			if avgBatchTime == 0 {
+				avgBatchTime = totalBatchDuration / time.Duration(completedBatches)
+			}
+		}
+
+		remainingBatches := totalBatches - completedBatches
+		globalETA := avgBatchTime * time.Duration(remainingBatches)
+
+		// Log global progress every batch (or every N batches if you want less spam)
+		d.logger.Info(fmt.Sprintf("Table progress - table: %s, completed_batches: %d/%d, percent: %.1f%%, ETA: %s, avg_batch_time: %s",
+			result.TableName, completedBatches, totalBatches, globalPercent, FormatDuration(globalETA), FormatDuration(avgBatchTime)))
 	}
 
-	// Check for critical database errors that should cause the entire operation to fail
-	// Note: We can't iterate over resultChan again since it's already closed
-	// The error checking should be done in the main loop above
-
-	// Log batch processing completion
 	d.logger.Info(fmt.Sprintf("Batch processing completed - table: %s, total_processed: %d, total_errors: %d, total_batches: %d",
-		tableName, totalProcessed, totalErrors, len(batches)))
+		tableName, totalProcessed, totalErrors, totalBatches))
 
 	return totalProcessed, totalErrors, nil
 }
