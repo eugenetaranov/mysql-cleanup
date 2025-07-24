@@ -153,7 +153,7 @@ func TestFakerDataChanges(t *testing.T) {
 		AllTables: true, // Run in all-tables mode
 	}
 
-	service := createService(false, 0, "5") // Use auto-detection for workers and batch size
+	service := createService(false, 0, "5", "") // Use auto-detection for workers and batch size
 	_, err = service.dataCleaner.CleanupData(config)
 	if err != nil {
 		t.Fatalf("Failed to run faker: %v", err)
@@ -1464,7 +1464,7 @@ func TestRangeAffectsOnlySpecifiedRows(t *testing.T) {
 		Range:    "2:5",
 	}
 
-	service := createService(false, 0, "5")
+	service := createService(false, 0, "5", "")
 	_, err = service.dataCleaner.CleanupData(config)
 	if err != nil {
 		t.Fatalf("Failed to run cleanup with range: %v", err)
