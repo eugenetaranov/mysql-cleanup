@@ -20,7 +20,7 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
 )
 
 // init seeds the random number generator to ensure unique fake data generation
