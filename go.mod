@@ -2,8 +2,6 @@ module mysql_cleanup
 
 go 1.23.0
 
-toolchain go1.24.5
-
 require (
 	github.com/aws/aws-sdk-go-v2/config v1.29.17
 	github.com/aws/aws-sdk-go-v2/feature/s3/manager v1.17.83
