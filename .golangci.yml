@@ -10,10 +10,15 @@ linters:
     - unused
     - gosimple
     - ineffassign
+    - shadow
 
 linters-settings:
-  govet:
-    check-shadowing: true
+  errcheck:
+    exclude-functions:
+      - "fmt.Printf"
+      - "fmt.Println"
+      - "log.Printf"
+      - "log.Println"
 
 issues:
   exclude-rules:
