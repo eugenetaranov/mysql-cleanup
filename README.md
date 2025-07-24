@@ -11,6 +11,20 @@ A simple Go CLI application for MySQL cleanup operations with flexible parameter
 
 ## Installation
 
+### Option 1: Docker (Recommended)
+
+```bash
+# Pull the latest image
+docker pull eugenetaranov/mysql-cleanup:latest
+
+# Run with Docker
+docker run --rm eugenetaranov/mysql-cleanup:latest --help
+```
+
+For detailed Docker usage, see [DOCKER.md](DOCKER.md).
+
+### Option 2: Build from Source
+
 1. Clone or download the project
 2. Install dependencies:
    ```bash
