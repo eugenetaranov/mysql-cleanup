@@ -11,6 +11,9 @@ import (
 	"github.com/joho/godotenv"
 )
 
+// Version will be set by the linker during build
+var version = "dev"
+
 type Config struct {
 	Host      string
 	User      string
@@ -96,8 +99,18 @@ func main() {
 	flag.StringVar(&config.Range, "range", "", "ID range to process (e.g., '0:1000' for IDs 0-1000, '1000:' for IDs 1000+, ':100K' for IDs up to 100K, '100K:1M' for IDs 100K-1M) - colon required")
 	flag.StringVar(&config.LogFile, "log-file", "", "Log file path for saving logs (optional)")
 
+	// Add version flag
+	var showVersion bool
+	flag.BoolVar(&showVersion, "version", false, "Show version information")
+
 	// Parse flags
 	flag.Parse()
+
+	// Show version and exit if requested
+	if showVersion {
+		fmt.Printf("mysql-cleanup version %s\n", version)
+		os.Exit(0)
+	}
 
 	// Create service with all dependencies
 	service := createService(config.Debug, config.Workers, config.BatchSize, config.LogFile)
