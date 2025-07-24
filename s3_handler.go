@@ -39,7 +39,7 @@ func (s *S3HandlerImpl) DownloadS3File(s3URI string) (string, error) {
 	bucket := parts[0]
 	key := parts[1]
 
-	s.logger.Info("Downloading file from S3", 
+	s.logger.Info("Downloading file from S3",
 		String("s3_uri", s3URI),
 		String("bucket", bucket),
 		String("key", key))
@@ -71,14 +71,14 @@ func (s *S3HandlerImpl) DownloadS3File(s3URI string) (string, error) {
 		Key:    &key,
 	})
 	if err != nil {
-		s.logger.Error("Failed to download file from S3", 
+		s.logger.Error("Failed to download file from S3",
 			Error("error", err),
 			String("s3_uri", s3URI))
 		os.Remove(tempFile.Name()) // Clean up temp file
 		return "", fmt.Errorf("failed to download file from S3: %w", err)
 	}
 
-	s.logger.Info("Successfully downloaded file from S3", 
+	s.logger.Info("Successfully downloaded file from S3",
 		String("s3_uri", s3URI),
 		String("local_path", tempFile.Name()))
 
@@ -90,15 +90,15 @@ func (s *S3HandlerImpl) CleanupTempFile(filePath string) error {
 	if filePath == "" {
 		return nil
 	}
-	
+
 	err := os.Remove(filePath)
 	if err != nil {
-		s.logger.Error("Failed to cleanup temp file", 
+		s.logger.Error("Failed to cleanup temp file",
 			Error("error", err),
 			String("file_path", filePath))
 		return fmt.Errorf("failed to cleanup temp file: %w", err)
 	}
-	
+
 	s.logger.Debug("Cleaned up temp file", String("file_path", filePath))
 	return nil
-} 
+}
