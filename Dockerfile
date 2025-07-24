@@ -17,12 +17,9 @@ RUN go mod download
 # Copy source code
 COPY . .
 
-# Build the application for multiple architectures
-# We'll use buildx to handle multi-arch builds
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -installsuffix cgo -o mysql_cleanup-linux-amd64 .
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -a -installsuffix cgo -o mysql_cleanup-linux-arm64 .
-RUN CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -a -installsuffix cgo -o mysql_cleanup-darwin-amd64 .
-RUN CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -a -installsuffix cgo -o mysql_cleanup-darwin-arm64 .
+# Build the application for the target architecture
+# Buildx will handle multi-arch builds by running this in separate containers
+RUN CGO_ENABLED=0 go build -a -installsuffix cgo -o mysql_cleanup .
 
 # Final stage
 FROM alpine:latest
@@ -36,18 +33,17 @@ RUN addgroup -g 1001 -S appgroup && \
 
 WORKDIR /app
 
-# Copy the appropriate binary based on target architecture
-# This will be handled by buildx during the build process
-COPY --from=builder /app/mysql_cleanup-linux-* /app/
+# Copy the binary
+COPY --from=builder /app/mysql_cleanup /app/
 
 # Make the binary executable
-RUN chmod +x /app/mysql_cleanup-*
+RUN chmod +x /app/mysql_cleanup
 
 # Switch to non-root user
 USER appuser
 
 # Set the entrypoint
-ENTRYPOINT ["./mysql_cleanup-linux-amd64"]
+ENTRYPOINT ["./mysql_cleanup"]
 
 # Default command
 CMD ["--help"]
