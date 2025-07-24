@@ -24,7 +24,7 @@ jobs:
           git diff --exit-code
       - name: Run golangci-lint
         run: |
-          $(go env GOPATH)/bin/golangci-lint run --modules-download-mode=vendor --disable=typecheck --timeout=5m
+          $(go env GOPATH)/bin/golangci-lint run --disable=typecheck --timeout=5m
       - name: Run unit tests
         run: |
           go test -v -short ./...
