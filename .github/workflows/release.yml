@@ -1,58 +1,65 @@
 name: Release
 
 on:
+  workflow_run:
+    workflows: ["Tests"]
+    types:
+      - completed
+    branches:
+      - main
   push:
     tags:
       - 'v*'
-    branches:
-      - main
 
 env:
   REGISTRY: docker.io
   IMAGE_NAME: eugenetaranov/mysql-cleanup
 
 jobs:
-  # build:
-  #   runs-on: ubuntu-latest
-  #   permissions:
-  #     contents: write
-  #     packages: write
+  build:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'push' }}
+    permissions:
+      contents: write
+      packages: write
 
-  #   steps:
-  #   - name: Checkout repository
-  #     uses: actions/checkout@v4
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
 
-  #   - name: Build binaries
-  #     run: |
-  #       # Set version from tag
-  #       VERSION=${GITHUB_REF#refs/tags/}
+    - name: Build binaries
+      run: |
+        # Set version from tag
+        VERSION=${GITHUB_REF#refs/tags/}
         
-  #       # Build for multiple platforms
-  #       GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -X main.version=$VERSION" -o mysql-cleanup-linux-amd64 .
-  #       GOOS=linux GOARCH=arm64 go build -ldflags="-s -w -X main.version=$VERSION" -o mysql-cleanup-linux-arm64 .
-  #       GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w -X main.version=$VERSION" -o mysql-cleanup-darwin-amd64 .
-  #       GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w -X main.version=$VERSION" -o mysql-cleanup-darwin-arm64 .
-  #       GOOS=windows GOARCH=amd64 go build -ldflags="-s -w -X main.version=$VERSION" -o mysql-cleanup-windows-amd64.exe .
-  #       GOOS=windows GOARCH=arm64 go build -ldflags="-s -w -X main.version=$VERSION" -o mysql-cleanup-windows-arm64.exe .
+        # Build for multiple platforms
+        GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -X main.version=$VERSION" -o mysql-cleanup-linux-amd64 .
+        GOOS=linux GOARCH=arm64 go build -ldflags="-s -w -X main.version=$VERSION" -o mysql-cleanup-linux-arm64 .
+        GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w -X main.version=$VERSION" -o mysql-cleanup-darwin-amd64 .
+        GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w -X main.version=$VERSION" -o mysql-cleanup-darwin-arm64 .
+        GOOS=windows GOARCH=amd64 go build -ldflags="-s -w -X main.version=$VERSION" -o mysql-cleanup-windows-amd64.exe .
+        GOOS=windows GOARCH=arm64 go build -ldflags="-s -w -X main.version=$VERSION" -o mysql-cleanup-windows-arm64.exe .
 
-  #   - name: Create release
-  #     uses: softprops/action-gh-release@v1
-  #     with:
-  #       files: |
-  #         mysql-cleanup-linux-amd64
-  #         mysql-cleanup-linux-arm64
-  #         mysql-cleanup-darwin-amd64
-  #         mysql-cleanup-darwin-arm64
-  #         mysql-cleanup-windows-amd64.exe
-  #         mysql-cleanup-windows-arm64.exe
-  #       draft: false
-  #       prerelease: false
-  #       generate_release_notes: true
-  #     env:
-  #       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Create release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          mysql-cleanup-linux-amd64
+          mysql-cleanup-linux-arm64
+          mysql-cleanup-darwin-amd64
+          mysql-cleanup-darwin-arm64
+          mysql-cleanup-windows-amd64.exe
+          mysql-cleanup-windows-arm64.exe
+        draft: false
+        prerelease: false
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   docker:
     runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'push' }}
+    needs: build
     permissions:
       contents: read
       packages: write
