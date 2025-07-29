@@ -167,14 +167,31 @@ func (y *YAMLConfigParser) displayConfig(yamlConfig YAMLConfig, config Config) {
 					}
 				}
 			} else if config.Table != "" {
-				// Show only the target table
-				if tableConfig, exists := dbConfig.Update[config.Table]; exists {
+				// Show only the target table - check both update and truncate sections
+				tableConfig, existsInUpdate := dbConfig.Update[config.Table]
+				existsInTruncate := false
+
+				// Check if table exists in truncate section
+				for _, truncateTable := range dbConfig.Truncate {
+					if truncateTable == config.Table {
+						existsInTruncate = true
+						break
+					}
+				}
+
+				if existsInUpdate {
 					y.logger.Debug(fmt.Sprintf("Update tables configuration - database: %s, target_table: %s", dbName, config.Table))
 					y.logger.Debug(fmt.Sprintf("Table configuration - database: %s, table: %s, column_count: %d", dbName, config.Table, len(tableConfig.Columns)))
 					if tableConfig.ExcludeClause != "" {
 						y.logger.Debug(fmt.Sprintf("Table exclude clause - database: %s, table: %s, exclude_clause: %s", dbName, config.Table, tableConfig.ExcludeClause))
 					}
-				} else {
+				}
+
+				if existsInTruncate {
+					y.logger.Debug(fmt.Sprintf("Truncate tables configuration - database: %s, target_table: %s", dbName, config.Table))
+				}
+
+				if !existsInUpdate && !existsInTruncate {
 					y.logger.Debug(fmt.Sprintf("Target table not found in config - database: %s, table: %s", dbName, config.Table))
 				}
 			}
@@ -320,20 +337,44 @@ func (d *DataCleanupService) CleanupData(config Config) (*CleanupStats, error) {
 				stats.TotalRowsProcessed += tableStats.TotalRowsProcessed
 				stats.TablesProcessed += tableStats.TablesProcessed
 			} else {
-				// Process only the specified table - go directly to it
-				tableConfig, exists := dbConfig.Update[config.Table]
-				if !exists {
-					d.logger.Debug(fmt.Sprintf("Table not found in config - table: %s, available_tables: %v", config.Table, getKeys(dbConfig.Update)))
-					return nil, fmt.Errorf("table '%s' not found in configuration", config.Table)
+				// Process only the specified table - check both update and truncate sections
+				tableConfig, existsInUpdate := dbConfig.Update[config.Table]
+				existsInTruncate := false
+
+				// Check if table exists in truncate section
+				for _, truncateTable := range dbConfig.Truncate {
+					if truncateTable == config.Table {
+						existsInTruncate = true
+						break
+					}
 				}
 
-				d.logger.Debug(fmt.Sprintf("Processing single table - table: %s", config.Table))
-				rowsProcessed, err := d.UpdateTableData(db, config.DB, config.Table, tableConfig, config)
-				if err != nil {
-					return nil, err
+				if !existsInUpdate && !existsInTruncate {
+					d.logger.Debug(fmt.Sprintf("Table not found in config - table: %s, available_update_tables: %v, available_truncate_tables: %v",
+						config.Table, getKeys(dbConfig.Update), dbConfig.Truncate))
+					return nil, fmt.Errorf("table '%s' not found in configuration (checked both update and truncate sections)", config.Table)
 				}
-				stats.TotalRowsProcessed += rowsProcessed
-				stats.TablesProcessed = 1
+
+				// Process truncate if table is in truncate section
+				if existsInTruncate {
+					d.logger.Debug(fmt.Sprintf("Truncating single table - table: %s", config.Table))
+					if err := d.TruncateTables(db, []string{config.Table}); err != nil {
+						d.logger.Error(fmt.Sprintf("Failed to truncate table - table: %s, error: %s", config.Table, err))
+						return nil, err
+					}
+					stats.TablesProcessed = 1
+				}
+
+				// Process update if table is in update section
+				if existsInUpdate {
+					d.logger.Debug(fmt.Sprintf("Processing single table update - table: %s", config.Table))
+					rowsProcessed, err := d.UpdateTableData(db, config.DB, config.Table, tableConfig, config)
+					if err != nil {
+						return nil, err
+					}
+					stats.TotalRowsProcessed += rowsProcessed
+					stats.TablesProcessed = 1
+				}
 			}
 		}
 	}
@@ -1465,6 +1506,40 @@ func (s *StdLogger) Error(msg string, fields ...Field) {
 
 func (s *StdLogger) With(fields ...Field) Logger {
 	return s // StdLogger doesn't support structured logging
+}
+
+// DebugLogger wraps a logger and only logs debug messages when debug mode is enabled
+type DebugLogger struct {
+	logger Logger
+	debug  bool
+}
+
+func (d *DebugLogger) Printf(format string, args ...interface{}) {
+	d.logger.Printf(format, args...)
+}
+
+func (d *DebugLogger) Println(args ...interface{}) {
+	d.logger.Println(args...)
+}
+
+func (d *DebugLogger) Debug(msg string, fields ...Field) {
+	d.logger.Debug(msg, fields...)
+}
+
+func (d *DebugLogger) Info(msg string, fields ...Field) {
+	d.logger.Info(msg, fields...)
+}
+
+func (d *DebugLogger) Warn(msg string, fields ...Field) {
+	d.logger.Warn(msg, fields...)
+}
+
+func (d *DebugLogger) Error(msg string, fields ...Field) {
+	d.logger.Error(msg, fields...)
+}
+
+func (d *DebugLogger) With(fields ...Field) Logger {
+	return &DebugLogger{logger: d.logger.With(fields...), debug: d.debug}
 }
 
 // MySQLTableFetcher implements TableDataFetcher

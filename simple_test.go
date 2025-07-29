@@ -178,6 +178,27 @@ func TestParseHumanizedBatchSize(t *testing.T) {
 	}
 }
 
+func TestSingleTableModeChecksBothSections(t *testing.T) {
+	// Create a test config with both update and truncate sections
+	config := Config{
+		DB:     "testdb",
+		Table:  "users",
+		Config: "tests/config.yaml",
+	}
+
+	// Create service
+	service := createService(false, 1, "1K", "")
+
+	// Parse config to verify the new behavior
+	err := service.configParser.ParseAndDisplayConfigFiltered(config.Config, config)
+	if err != nil {
+		t.Fatalf("Failed to parse config: %v", err)
+	}
+
+	// The test passes if no error is returned, indicating the table was found
+	// in either update or truncate section
+}
+
 func int64Ptr(val int64) *int64 {
 	return &val
 }

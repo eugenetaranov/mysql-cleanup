@@ -37,7 +37,7 @@ func createService(debug bool, workers int, batchSizeStr string, logFile string)
 	dbConnector := &MySQLConnector{}
 	fileReader := &OSFileReader{}
 
-	// Create logger based on log file option
+	// Create logger based on debug and log file options
 	var logger Logger
 	if logFile != "" {
 		// Create multi-logger that writes to both console and file
@@ -51,6 +51,11 @@ func createService(debug bool, workers int, batchSizeStr string, logFile string)
 		}
 	} else {
 		logger = &StdLogger{} // Use simple logger without stack traces
+	}
+
+	// Create debug-aware logger if debug mode is enabled
+	if debug {
+		logger = &DebugLogger{logger: logger, debug: true}
 	}
 
 	s3Handler := NewS3Handler(logger)
