@@ -21,7 +21,7 @@ type Config struct {
 	Password  string
 	Config    string
 	DB        string
-	Table     string
+	Tables    []string // Changed from Table string to Tables []string
 	AllTables bool
 	Debug     bool
 	Workers   int
@@ -96,7 +96,12 @@ func main() {
 	flag.StringVar(&config.Password, "password", getEnvWithDefault("PASSWORD", ""), "Database password")
 	flag.StringVar(&config.Config, "config", getEnvWithDefault("CONFIG", ""), "Configuration file path")
 	flag.StringVar(&config.DB, "db", getEnvWithDefault("DB", ""), "Database name")
-	flag.StringVar(&config.Table, "table", getEnvWithDefault("TABLE", ""), "Table name")
+	// Collect multiple table flags
+	var tableFlags []string
+	flag.Func("table", "Table name (can be specified multiple times)", func(value string) error {
+		tableFlags = append(tableFlags, value)
+		return nil
+	})
 	flag.BoolVar(&config.AllTables, "all-tables", false, "Process all tables in the database")
 	flag.BoolVar(&config.Debug, "debug", false, "Enable debug logging")
 	flag.IntVar(&config.Workers, "workers", 10, "Number of worker goroutines (default: 10)")
@@ -110,6 +115,9 @@ func main() {
 
 	// Parse flags
 	flag.Parse()
+
+	// Assign collected table flags to config
+	config.Tables = tableFlags
 
 	// Show version and exit if requested
 	if showVersion {
@@ -131,7 +139,7 @@ func main() {
 	if config.AllTables {
 		service.logger.Info("  Mode: All tables")
 	} else {
-		service.logger.Info(fmt.Sprintf("  Table: %s", config.Table))
+		service.logger.Info(fmt.Sprintf("  Tables: %v", config.Tables))
 	}
 	service.logger.Info(fmt.Sprintf("  Workers: %d", config.Workers))
 	service.logger.Info(fmt.Sprintf("  Batch size: %s", config.BatchSize))
@@ -148,7 +156,7 @@ func main() {
 	if config.AllTables {
 		service.logger.Debug("Mode: All tables")
 	} else {
-		service.logger.Debug(fmt.Sprintf("Mode: Single table - table: %s", config.Table))
+		service.logger.Debug(fmt.Sprintf("Mode: Multiple tables - tables: %v", config.Tables))
 	}
 
 	// Parse and display YAML configuration if provided
@@ -172,8 +180,8 @@ func main() {
 			os.Exit(1)
 		}
 
-		if !config.AllTables && config.Table == "" {
-			service.logger.Error("Error: Either -table or -all-tables argument is required")
+		if !config.AllTables && len(config.Tables) == 0 {
+			service.logger.Error("Error: Either -table (can be specified multiple times) or -all-tables argument is required")
 			os.Exit(1)
 		}
 		service.logger.Debug("Arguments validated successfully")

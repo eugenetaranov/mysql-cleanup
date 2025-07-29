@@ -166,33 +166,35 @@ func (y *YAMLConfigParser) displayConfig(yamlConfig YAMLConfig, config Config) {
 						y.logger.Debug(fmt.Sprintf("Table exclude clause - database: %s, table: %s, exclude_clause: %s", dbName, tableName, tableConfig.ExcludeClause))
 					}
 				}
-			} else if config.Table != "" {
-				// Show only the target table - check both update and truncate sections
-				tableConfig, existsInUpdate := dbConfig.Update[config.Table]
-				existsInTruncate := false
+			} else if len(config.Tables) > 0 {
+				// Show only the target tables - check both update and truncate sections
+				for _, tableName := range config.Tables {
+					tableConfig, existsInUpdate := dbConfig.Update[tableName]
+					existsInTruncate := false
 
-				// Check if table exists in truncate section
-				for _, truncateTable := range dbConfig.Truncate {
-					if truncateTable == config.Table {
-						existsInTruncate = true
-						break
+					// Check if table exists in truncate section
+					for _, truncateTable := range dbConfig.Truncate {
+						if truncateTable == tableName {
+							existsInTruncate = true
+							break
+						}
 					}
-				}
 
-				if existsInUpdate {
-					y.logger.Debug(fmt.Sprintf("Update tables configuration - database: %s, target_table: %s", dbName, config.Table))
-					y.logger.Debug(fmt.Sprintf("Table configuration - database: %s, table: %s, column_count: %d", dbName, config.Table, len(tableConfig.Columns)))
-					if tableConfig.ExcludeClause != "" {
-						y.logger.Debug(fmt.Sprintf("Table exclude clause - database: %s, table: %s, exclude_clause: %s", dbName, config.Table, tableConfig.ExcludeClause))
+					if existsInUpdate {
+						y.logger.Debug(fmt.Sprintf("Update tables configuration - database: %s, target_table: %s", dbName, tableName))
+						y.logger.Debug(fmt.Sprintf("Table configuration - database: %s, table: %s, column_count: %d", dbName, tableName, len(tableConfig.Columns)))
+						if tableConfig.ExcludeClause != "" {
+							y.logger.Debug(fmt.Sprintf("Table exclude clause - database: %s, table: %s, exclude_clause: %s", dbName, tableName, tableConfig.ExcludeClause))
+						}
 					}
-				}
 
-				if existsInTruncate {
-					y.logger.Debug(fmt.Sprintf("Truncate tables configuration - database: %s, target_table: %s", dbName, config.Table))
-				}
+					if existsInTruncate {
+						y.logger.Debug(fmt.Sprintf("Truncate tables configuration - database: %s, target_table: %s", dbName, tableName))
+					}
 
-				if !existsInUpdate && !existsInTruncate {
-					y.logger.Debug(fmt.Sprintf("Target table not found in config - database: %s, table: %s", dbName, config.Table))
+					if !existsInUpdate && !existsInTruncate {
+						y.logger.Debug(fmt.Sprintf("Target table not found in config - database: %s, table: %s", dbName, tableName))
+					}
 				}
 			}
 		}
@@ -283,7 +285,7 @@ func (d *DataCleanupService) CleanupData(config Config) (*CleanupStats, error) {
 	startTime := time.Now()
 	stats := &CleanupStats{}
 
-	d.logger.Debug(fmt.Sprintf("Starting data cleanup - database: %s, table: %s, all_tables: %t", config.DB, config.Table, config.AllTables))
+	d.logger.Debug(fmt.Sprintf("Starting data cleanup - database: %s, tables: %v, all_tables: %t", config.DB, config.Tables, config.AllTables))
 
 	// Parse the YAML configuration
 	yamlConfig, err := d.configParser.ParseConfig(config.Config)
@@ -337,44 +339,60 @@ func (d *DataCleanupService) CleanupData(config Config) (*CleanupStats, error) {
 				stats.TotalRowsProcessed += tableStats.TotalRowsProcessed
 				stats.TablesProcessed += tableStats.TablesProcessed
 			} else {
-				// Process only the specified table - check both update and truncate sections
-				tableConfig, existsInUpdate := dbConfig.Update[config.Table]
-				existsInTruncate := false
+				// Process multiple specified tables
+				d.logger.Debug(fmt.Sprintf("Processing multiple tables - tables: %v", config.Tables))
 
-				// Check if table exists in truncate section
-				for _, truncateTable := range dbConfig.Truncate {
-					if truncateTable == config.Table {
-						existsInTruncate = true
-						break
+				// Track which tables were found and processed
+				foundTables := make(map[string]bool)
+				processedTables := 0
+
+				for _, tableName := range config.Tables {
+					d.logger.Debug(fmt.Sprintf("Processing table - table: %s", tableName))
+
+					// Check if table exists in update section
+					tableConfig, existsInUpdate := dbConfig.Update[tableName]
+					existsInTruncate := false
+
+					// Check if table exists in truncate section
+					for _, truncateTable := range dbConfig.Truncate {
+						if truncateTable == tableName {
+							existsInTruncate = true
+							break
+						}
+					}
+
+					if !existsInUpdate && !existsInTruncate {
+						d.logger.Debug(fmt.Sprintf("Table not found in config - table: %s, available_update_tables: %v, available_truncate_tables: %v",
+							tableName, getKeys(dbConfig.Update), dbConfig.Truncate))
+						return nil, fmt.Errorf("table '%s' not found in configuration (checked both update and truncate sections)", tableName)
+					}
+
+					// Process truncate if table is in truncate section
+					if existsInTruncate {
+						d.logger.Debug(fmt.Sprintf("Truncating table - table: %s", tableName))
+						if err := d.TruncateTables(db, []string{tableName}); err != nil {
+							d.logger.Error(fmt.Sprintf("Failed to truncate table - table: %s, error: %s", tableName, err))
+							return nil, err
+						}
+						processedTables++
+						foundTables[tableName] = true
+					}
+
+					// Process update if table is in update section
+					if existsInUpdate {
+						d.logger.Debug(fmt.Sprintf("Processing table update - table: %s", tableName))
+						rowsProcessed, err := d.UpdateTableData(db, config.DB, tableName, tableConfig, config)
+						if err != nil {
+							return nil, err
+						}
+						stats.TotalRowsProcessed += rowsProcessed
+						processedTables++
+						foundTables[tableName] = true
 					}
 				}
 
-				if !existsInUpdate && !existsInTruncate {
-					d.logger.Debug(fmt.Sprintf("Table not found in config - table: %s, available_update_tables: %v, available_truncate_tables: %v",
-						config.Table, getKeys(dbConfig.Update), dbConfig.Truncate))
-					return nil, fmt.Errorf("table '%s' not found in configuration (checked both update and truncate sections)", config.Table)
-				}
-
-				// Process truncate if table is in truncate section
-				if existsInTruncate {
-					d.logger.Debug(fmt.Sprintf("Truncating single table - table: %s", config.Table))
-					if err := d.TruncateTables(db, []string{config.Table}); err != nil {
-						d.logger.Error(fmt.Sprintf("Failed to truncate table - table: %s, error: %s", config.Table, err))
-						return nil, err
-					}
-					stats.TablesProcessed = 1
-				}
-
-				// Process update if table is in update section
-				if existsInUpdate {
-					d.logger.Debug(fmt.Sprintf("Processing single table update - table: %s", config.Table))
-					rowsProcessed, err := d.UpdateTableData(db, config.DB, config.Table, tableConfig, config)
-					if err != nil {
-						return nil, err
-					}
-					stats.TotalRowsProcessed += rowsProcessed
-					stats.TablesProcessed = 1
-				}
+				stats.TablesProcessed = processedTables
+				d.logger.Debug(fmt.Sprintf("Completed processing multiple tables - processed_count: %d, tables: %v", processedTables, config.Tables))
 			}
 		}
 	}
@@ -1570,11 +1588,15 @@ func (m *MySQLTableFetcher) FetchAndDisplayTableData(config Config) error {
 
 	m.logger.Debug("Connected to database", String("database", config.DB))
 
-	// Fetch data from table
-	query := fmt.Sprintf("SELECT * FROM %s LIMIT 10", config.Table)
+	// Fetch data from the first table in the list (for backward compatibility)
+	if len(config.Tables) == 0 {
+		return fmt.Errorf("no tables specified")
+	}
+	tableName := config.Tables[0]
+	query := fmt.Sprintf("SELECT * FROM %s LIMIT 10", tableName)
 	rows, err := db.Query(query)
 	if err != nil {
-		return fmt.Errorf("failed to query table %s: %w", config.Table, err)
+		return fmt.Errorf("failed to query table %s: %w", tableName, err)
 	}
 	defer rows.Close()
 
@@ -1585,7 +1607,7 @@ func (m *MySQLTableFetcher) FetchAndDisplayTableData(config Config) error {
 	}
 
 	// Print column headers
-	m.logger.Debug(fmt.Sprintf("Table data - table: %s, columns: %v", config.Table, columns))
+	m.logger.Debug(fmt.Sprintf("Table data - table: %s, columns: %v", tableName, columns))
 
 	// Prepare slice to hold row data
 	values := make([]interface{}, len(columns))
@@ -1624,9 +1646,9 @@ func (m *MySQLTableFetcher) FetchAndDisplayTableData(config Config) error {
 	}
 
 	if rowCount == 0 {
-		m.logger.Debug(fmt.Sprintf("No data found in table - table: %s", config.Table))
+		m.logger.Debug(fmt.Sprintf("No data found in table - table: %s", tableName))
 	} else {
-		m.logger.Debug(fmt.Sprintf("Total rows displayed - table: %s, row_count: %d", config.Table, rowCount))
+		m.logger.Debug(fmt.Sprintf("Total rows displayed - table: %s, row_count: %d", tableName, rowCount))
 	}
 
 	return nil

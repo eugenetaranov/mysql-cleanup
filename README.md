@@ -44,6 +44,13 @@ Process a specific table from the configuration:
 ./bin/mysql_cleanup -host=localhost -user=root -port=3306 -password=mypass -db=mydb -table=mytable
 ```
 
+### Multiple Tables Mode
+Process multiple specific tables from the configuration:
+
+```bash
+./bin/mysql_cleanup -host=localhost -user=root -port=3306 -password=mypass -db=mydb -table=table1 -table=table2 -table=table3
+```
+
 ### All Tables Mode
 Process all tables defined in the configuration:
 
@@ -85,7 +92,7 @@ cp env.example .env
 | `-password` | `PASSWORD` | (empty) | Database password |
 | `-config` | `CONFIG` | (empty) | Configuration file path |
 | `-db` | `DB` | (empty) | Database name (required) |
-| `-table` | `TABLE` | (empty) | Table name (required for single table mode) |
+| `-table` | `TABLE` | (empty) | Table name (can be specified multiple times for multiple table mode) |
 | `-all-tables` | (none) | false | Process all tables (required for all tables mode) |
 | `-debug` | (none) | false | Enable debug logging |
 | `-workers` | (none) | 1 | Number of worker goroutines for parallel processing |
