@@ -257,7 +257,7 @@ func TestParallelWorkers(t *testing.T) {
 		Password:  "root",
 		DB:        "acme_corp",
 		Config:    "tests/config.yaml", // This won't be used by our custom parser
-		Table:     "parallel_test_table",
+		Tables:    []string{"parallel_test_table"},
 		Workers:   4,
 		BatchSize: "5",
 	}
@@ -346,7 +346,7 @@ func TestLargeBatches(t *testing.T) {
 		Password:  "root",
 		DB:        "acme_corp",
 		Config:    "tests/config.yaml",
-		Table:     "batch_test_table",
+		Tables:    []string{"batch_test_table"},
 		Workers:   4,
 		BatchSize: "50",
 	}
@@ -401,7 +401,7 @@ func TestPerformanceComparison(t *testing.T) {
 		Password:  "root",
 		DB:        "acme_corp",
 		Config:    "tests/config.yaml",
-		Table:     "performance_test_table",
+		Tables:    []string{"performance_test_table"},
 		Workers:   1,
 		BatchSize: "1",
 	}
@@ -514,7 +514,7 @@ func TestErrorHandlingInParallel(t *testing.T) {
 		Password:  "root",
 		DB:        "acme_corp",
 		Config:    "tests/config.yaml",
-		Table:     "error_test_table",
+		Tables:    []string{"error_test_table"},
 		Workers:   4,
 		BatchSize: "5",
 	}
@@ -1032,7 +1032,7 @@ func TestEdgeCaseZeroRows(t *testing.T) {
 		Password:  "root",
 		DB:        "acme_corp",
 		Config:    "tests/config.yaml",
-		Table:     "edge_case_zero_rows",
+		Tables:    []string{"edge_case_zero_rows"},
 		Workers:   2,
 		BatchSize: "10",
 	}
@@ -1103,7 +1103,7 @@ func TestEdgeCaseBatchLargerThanRows(t *testing.T) {
 		Password:  "root",
 		DB:        "acme_corp",
 		Config:    "tests/config.yaml",
-		Table:     "edge_case_small_table",
+		Tables:    []string{"edge_case_small_table"},
 		Workers:   2,
 		BatchSize: "20",
 	}
@@ -1174,7 +1174,7 @@ func TestEdgeCaseBatchSizeOne(t *testing.T) {
 		Password:  "root",
 		DB:        "acme_corp",
 		Config:    "tests/config.yaml",
-		Table:     "edge_case_batch_size_one",
+		Tables:    []string{"edge_case_batch_size_one"},
 		Workers:   4,
 		BatchSize: "1",
 	}
@@ -1259,7 +1259,7 @@ func TestNonIdPrimaryKey(t *testing.T) {
 		Password:  "root",
 		DB:        "acme_corp",
 		Config:    "tests/config.yaml",
-		Table:     tableName,
+		Tables:    []string{tableName},
 		Workers:   2,
 		BatchSize: "5",
 	}
@@ -1369,7 +1369,7 @@ func TestCompositePrimaryKey(t *testing.T) {
 		Password:  "root",
 		DB:        "acme_corp",
 		Config:    "tests/config.yaml",
-		Table:     tableName,
+		Tables:    []string{tableName},
 		Workers:   2,
 		BatchSize: "5",
 	}
@@ -1460,7 +1460,7 @@ func TestRangeAffectsOnlySpecifiedRows(t *testing.T) {
 		Password: "root",
 		DB:       "acme_corp",
 		Config:   "tests/config.yaml",
-		Table:    "account_user",
+		Tables:   []string{"account_user"},
 		Range:    "2:5",
 	}
 

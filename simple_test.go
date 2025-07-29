@@ -182,7 +182,7 @@ func TestSingleTableModeChecksBothSections(t *testing.T) {
 	// Create a test config with both update and truncate sections
 	config := Config{
 		DB:     "testdb",
-		Table:  "users",
+		Tables: []string{"users"},
 		Config: "tests/config.yaml",
 	}
 
