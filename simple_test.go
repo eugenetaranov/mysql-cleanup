@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -229,4 +230,192 @@ func rangesEqual(a, b *IDRange) bool {
 	}
 
 	return true
+}
+
+func TestStaticValueGeneration(t *testing.T) {
+	// Create a schema-aware generator
+	logger := &StdLogger{}
+	generator := NewSchemaAwareGofakeitGenerator(logger)
+
+	// Test cases for static values
+	testCases := []struct {
+		input    string
+		expected interface{}
+		hasError bool
+	}{
+		{"static_value: 1", 1, false},
+		{"static_value: 42", 42, false},
+		{"static_value: 3.14", 3.14, false},
+		{"static_value: true", true, false},
+		{"static_value: false", false, false},
+		{"static_value: NULL", nil, false},
+		{"static_value: null", nil, false},
+		{"static_value: hello", "hello", false},
+		{"static_value: test string", "test string", false},
+		{"static_value: ", "", false},
+		{"static_value: 0", 0, false},
+		{"static_value: -1", -1, false},
+		{"static_value: 0.0", 0.0, false},
+		{"static_value: -3.14", -3.14, false},
+		{"static_value: TRUE", true, false},
+		{"static_value: FALSE", false, false},
+		{"static_value: True", true, false},
+		{"static_value: False", false, false},
+		{"", nil, false}, // Empty string
+		// Test that non-static values still work as before
+		{"random_email", nil, false}, // Should not be treated as static value
+		{"random_name", nil, false},  // Should not be treated as static value
+		{"unknown_type", nil, true},  // Should return error for unknown types
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.input, func(t *testing.T) {
+			result, err := generator.generateBasicFakeValue(tc.input)
+
+			if tc.hasError {
+				if err == nil {
+					t.Errorf("Expected error for input '%s', but got none", tc.input)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Unexpected error for input '%s': %v", tc.input, err)
+				} else if result != tc.expected {
+					// For random faker types, we don't know the exact value, just check it's not nil
+					if strings.HasPrefix(tc.input, "random_") && tc.expected == nil {
+						if result == nil {
+							t.Errorf("For input '%s', expected non-nil result, got nil", tc.input)
+						}
+					} else if result != tc.expected {
+						t.Errorf("For input '%s', expected %v, got %v", tc.input, tc.expected, result)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestStaticValueGenerationBasic(t *testing.T) {
+	// Create a basic generator
+	generator := NewGofakeitGenerator()
+
+	// Test cases for static values
+	testCases := []struct {
+		input    string
+		expected interface{}
+		hasError bool
+	}{
+		{"static_value: 1", 1, false},
+		{"static_value: 42", 42, false},
+		{"static_value: 3.14", 3.14, false},
+		{"static_value: true", true, false},
+		{"static_value: false", false, false},
+		{"static_value: NULL", nil, false},
+		{"static_value: null", nil, false},
+		{"static_value: hello", "hello", false},
+		{"static_value: test string", "test string", false},
+		{"static_value: ", "", false},
+		{"static_value: 0", 0, false},
+		{"static_value: -1", -1, false},
+		{"static_value: 0.0", 0.0, false},
+		{"static_value: -3.14", -3.14, false},
+		{"static_value: TRUE", true, false},
+		{"static_value: FALSE", false, false},
+		{"static_value: True", true, false},
+		{"static_value: False", false, false},
+		{"", nil, false}, // Empty string
+		// Test that non-static values still work as before
+		{"random_email", nil, false}, // Should not be treated as static value
+		{"random_name", nil, false},  // Should not be treated as static value
+		{"unknown_type", nil, true},  // Should return error for unknown types
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.input, func(t *testing.T) {
+			result, err := generator.GenerateFakeValue(tc.input)
+
+			if tc.hasError {
+				if err == nil {
+					t.Errorf("Expected error for input '%s', but got none", tc.input)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Unexpected error for input '%s': %v", tc.input, err)
+				} else if result != tc.expected {
+					// For random faker types, we don't know the exact value, just check it's not nil
+					if strings.HasPrefix(tc.input, "random_") && tc.expected == nil {
+						if result == nil {
+							t.Errorf("For input '%s', expected non-nil result, got nil", tc.input)
+						}
+					} else if result != tc.expected {
+						t.Errorf("For input '%s', expected %v, got %v", tc.input, tc.expected, result)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestStaticValueErrorHandling(t *testing.T) {
+	// Test that the original error case is properly handled
+	logger := &StdLogger{}
+	generator := NewSchemaAwareGofakeitGenerator(logger)
+
+	// Test the specific case that was failing before
+	result, err := generator.generateBasicFakeValue("static_value: 1")
+	if err != nil {
+		t.Errorf("Expected no error for 'static_value: 1', but got: %v", err)
+	}
+	if result != 1 {
+		t.Errorf("Expected 1 for 'static_value: 1', but got: %v", result)
+	}
+
+	// Test that unknown types still return errors
+	_, err = generator.generateBasicFakeValue("unknown_faker_type")
+	if err == nil {
+		t.Error("Expected error for unknown faker type, but got none")
+	}
+	if !strings.Contains(err.Error(), "unknown faker type") {
+		t.Errorf("Expected error message to contain 'unknown faker type', but got: %v", err)
+	}
+
+	// Test that regular faker types still work
+	result, err = generator.generateBasicFakeValue("random_email")
+	if err != nil {
+		t.Errorf("Expected no error for 'random_email', but got: %v", err)
+	}
+	if result == nil {
+		t.Error("Expected non-nil result for 'random_email'")
+	}
+}
+
+func TestStaticValueErrorHandlingBasic(t *testing.T) {
+	// Test that the original error case is properly handled in basic generator
+	generator := NewGofakeitGenerator()
+
+	// Test the specific case that was failing before
+	result, err := generator.GenerateFakeValue("static_value: 1")
+	if err != nil {
+		t.Errorf("Expected no error for 'static_value: 1', but got: %v", err)
+	}
+	if result != 1 {
+		t.Errorf("Expected 1 for 'static_value: 1', but got: %v", result)
+	}
+
+	// Test that unknown types still return errors
+	_, err = generator.GenerateFakeValue("unknown_faker_type")
+	if err == nil {
+		t.Error("Expected error for unknown faker type, but got none")
+	}
+	if !strings.Contains(err.Error(), "unknown faker type") {
+		t.Errorf("Expected error message to contain 'unknown faker type', but got: %v", err)
+	}
+
+	// Test that regular faker types still work
+	result, err = generator.GenerateFakeValue("random_email")
+	if err != nil {
+		t.Errorf("Expected no error for 'random_email', but got: %v", err)
+	}
+	if result == nil {
+		t.Error("Expected non-nil result for 'random_email'")
+	}
 }

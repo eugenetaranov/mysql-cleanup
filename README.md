@@ -164,6 +164,122 @@ You can specify batch sizes using humanized formats for easier configuration of 
 ./bin/mysql_cleanup -db=mydb -table=mytable -batch-size 100K
 ```
 
+## Configuration File Format
+
+The application uses YAML configuration files to define table update rules. The configuration supports both random data generation and static values.
+
+### Configuration Structure
+
+```yaml
+databases:
+  database_name:
+    truncate:
+      - table_to_truncate
+    
+    update:
+      table_name:
+        columns:
+          column_name: faker_type_or_static_value
+        exclude_clause: "SQL WHERE clause"
+```
+
+### Supported Faker Types
+
+The following faker types are supported for generating random data:
+
+- `random_email` - Random email address
+- `random_name` - Random full name
+- `random_firstname` - Random first name
+- `random_lastname` - Random last name
+- `random_company` - Random company name
+- `random_address` - Random street address
+- `random_city` - Random city name
+- `random_state` - Random state abbreviation
+- `random_country_code` - Random country code
+- `random_postalcode` - Random postal code
+- `random_phone_short` - Random phone number (short format)
+- `random_username` - Random username
+- `random_id` - Random UUID
+- `random_text` - Random text (1-3 sentences)
+- `random_word` - Random word
+- `random_email_subject` - Random email subject
+- `random_file_name` - Random filename with extension
+- `random_number_txt` - Random number as text
+- `random_room_number_txt` - Random room number as text
+
+### Static Values
+
+You can specify static values using the `static_value:` prefix:
+
+```yaml
+columns:
+  # Static integer
+  status: "static_value: 1"
+  
+  # Static boolean
+  is_active: "static_value: true"
+  
+  # Static string
+  category: "static_value: premium"
+  
+  # Static NULL
+  optional_field: "static_value: NULL"
+  
+  # Static float
+  price: "static_value: 99.99"
+```
+
+**Supported static value types:**
+- **Integers**: `"static_value: 1"`, `"static_value: 42"`
+- **Floats**: `"static_value: 3.14"`, `"static_value: 99.99"`
+- **Booleans**: `"static_value: true"`, `"static_value: false"`
+- **NULL**: `"static_value: NULL"`, `"static_value: null"`
+- **Strings**: `"static_value: hello"`, `"static_value: test string"`
+
+### Configuration Examples
+
+**Example 1: Basic table with random data**
+```yaml
+databases:
+  mydb:
+    update:
+      users:
+        columns:
+          email: random_email
+          name: random_name
+          phone: random_phone_short
+        exclude_clause: "email RLIKE '.*@company\\.com'"
+```
+
+**Example 2: Table with mixed random and static values**
+```yaml
+databases:
+  mydb:
+    update:
+      products:
+        columns:
+          name: random_word
+          price: "static_value: 99.99"
+          status: "static_value: 1"
+          category: "static_value: active"
+          description: random_text
+        exclude_clause: "status = 0"
+```
+
+**Example 3: Table with NULL values**
+```yaml
+databases:
+  mydb:
+    update:
+      orders:
+        columns:
+          customer_email: random_email
+          notes: "static_value: NULL"
+          priority: "static_value: 0"
+          status: "static_value: pending"
+        exclude_clause: "customer_email RLIKE '.*@internal\\.com'"
+```
+
 ## Priority Order
 
 1. Command line arguments (highest priority)

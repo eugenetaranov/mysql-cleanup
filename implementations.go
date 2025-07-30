@@ -1176,6 +1176,35 @@ func (g *SchemaAwareGofakeitGenerator) GenerateFakeValue(fakerType string, info 
 
 func (g *SchemaAwareGofakeitGenerator) generateBasicFakeValue(fakerType string) (interface{}, error) {
 
+	// Handle static_value format (e.g., "static_value: 1", "static_value: true", "static_value: hello")
+	if strings.HasPrefix(fakerType, "static_value:") {
+		staticValue := strings.TrimSpace(strings.TrimPrefix(fakerType, "static_value:"))
+
+		// Try to parse as different types
+		// First, try as integer
+		if num, err := strconv.Atoi(staticValue); err == nil {
+			return num, nil
+		}
+
+		// Try as float
+		if num, err := strconv.ParseFloat(staticValue, 64); err == nil {
+			return num, nil
+		}
+
+		// Try as boolean (case-insensitive)
+		if strings.ToLower(staticValue) == "true" || strings.ToLower(staticValue) == "false" {
+			return strings.ToLower(staticValue) == "true", nil
+		}
+
+		// Try as NULL
+		if staticValue == "NULL" || staticValue == "null" {
+			return nil, nil
+		}
+
+		// Return as string (default)
+		return staticValue, nil
+	}
+
 	switch fakerType {
 	case "random_email":
 		// Generate a more unique email with multiple random components
@@ -1243,6 +1272,35 @@ func (g *SchemaAwareGofakeitGenerator) generateBasicFakeValue(fakerType string) 
 }
 
 func (g *GofakeitGenerator) GenerateFakeValue(fakerType string) (interface{}, error) {
+
+	// Handle static_value format (e.g., "static_value: 1", "static_value: true", "static_value: hello")
+	if strings.HasPrefix(fakerType, "static_value:") {
+		staticValue := strings.TrimSpace(strings.TrimPrefix(fakerType, "static_value:"))
+
+		// Try to parse as different types
+		// First, try as integer
+		if num, err := strconv.Atoi(staticValue); err == nil {
+			return num, nil
+		}
+
+		// Try as float
+		if num, err := strconv.ParseFloat(staticValue, 64); err == nil {
+			return num, nil
+		}
+
+		// Try as boolean (case-insensitive)
+		if strings.ToLower(staticValue) == "true" || strings.ToLower(staticValue) == "false" {
+			return strings.ToLower(staticValue) == "true", nil
+		}
+
+		// Try as NULL
+		if staticValue == "NULL" || staticValue == "null" {
+			return nil, nil
+		}
+
+		// Return as string (default)
+		return staticValue, nil
+	}
 
 	switch fakerType {
 	case "random_email":
