@@ -14,7 +14,6 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 	tc "github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/modules/mysql"
 )
 
 // setupTestMySQLContainer starts a MySQL container, seeds it, and returns the container, db, and cleanup func
@@ -82,93 +81,7 @@ func setupTestMySQLContainer(t *testing.T) (container tc.Container, db *sql.DB, 
 		NewGofakeitGenerator(),
 		NewSchemaAwareGofakeitGenerator(NewStdLogger()),
 		NewStdLogger(),
-		2, // workers
-		100, // batch size
-	)
-
-	// Process the table
-	stats, err := cleanupService.CleanupData(config)
-	if err != nil {
-		t.Fatalf("Failed to process table without primary key: %v", err)
-	}
-
-	// Verify that processing completed
-	if stats == nil {
-		t.Fatal("No stats returned")
-	}
-
-	// Verify that some rows were processed
-	if stats.TotalProcessed == 0 {
-		t.Error("No rows were processed")
-	}
-
-	// Verify that the data was actually changed
-	changedCount, err := getChangedRowCount(db, "acme_corp", "email_recipients", "recipient_email")
-	if err != nil {
-		t.Fatalf("Failed to get changed row count: %v", err)
-	}
-
-	if changedCount == 0 {
-		t.Error("No rows were actually updated")
-	}
-
-	t.Logf("Successfully processed %d rows using offset-based processing", stats.TotalProcessed)
-}
-
-
-	if testing.Short() {
-		t.Skip("Skipping test in short mode")
-	}
-
-	container, db, cleanup := setupTestMySQLContainer(t)
-	defer cleanup()
-
-	// Create a table without primary key (junction table)
-	if err := createTableWithoutPrimaryKey(db, "email_recipients"); err != nil {
-		t.Fatalf("Failed to create table without primary key: %v", err)
-	}
-
-	// Insert test data
-	if err := insertTestDataForNonPKTable(db, "email_recipients"); err != nil {
-		t.Fatalf("Failed to insert test data: %v", err)
-	}
-
-	// Verify initial data
-	initialCount, err := getRowCount(db, "acme_corp", "email_recipients")
-	if err != nil {
-		t.Fatalf("Failed to get initial row count: %v", err)
-	}
-	if initialCount == 0 {
-		t.Fatal("No test data inserted")
-	}
-
-	// Create service with offset-based processing
-	service := createTestService(db, 2, "100") // 2 workers, 100 batch size
-
-	// Create custom config parser for the non-PK table
-	configParser := &CustomTestConfigParser{
-		tableName: "email_recipients",
-		columns: map[string]string{
-			"recipient_email": "random_email",
-			"recipient_name":  "random_name",
-		},
-	}
-
-	// Create test config
-	config := Config{
-		DB:     "acme_corp",
-		Tables: []string{"email_recipients"},
-		Config: "tests/config.yaml", // This won't be used due to custom parser
-	}
-
-	// Create cleanup service
-	cleanupService := NewDataCleanupService(
-		&TestContainerConnector{db: db},
-		configParser,
-		NewGofakeitGenerator(),
-		NewSchemaAwareGofakeitGenerator(NewStdLogger()),
-		NewStdLogger(),
-		2, // workers
+		2,   // workers
 		100, // batch size
 	)
 
@@ -256,7 +169,7 @@ func TestTableWithoutPrimaryKeyParallelProcessing(t *testing.T) {
 		NewGofakeitGenerator(),
 		NewSchemaAwareGofakeitGenerator(NewStdLogger()),
 		NewStdLogger(),
-		4, // workers
+		4,   // workers
 		200, // batch size
 	)
 
@@ -345,7 +258,7 @@ func TestTableWithoutPrimaryKeyExcludeClause(t *testing.T) {
 		NewGofakeitGenerator(),
 		NewSchemaAwareGofakeitGenerator(NewStdLogger()),
 		NewStdLogger(),
-		2, // workers
+		2,   // workers
 		100, // batch size
 	)
 
@@ -451,7 +364,7 @@ func insertTestDataWithExcludePattern(db *sql.DB, tableName string) error {
 		} else {
 			email = fmt.Sprintf("user%d@example.com", i)
 		}
-		
+
 		query := fmt.Sprintf(`
 			INSERT INTO %s (id, email_history_id, recipient_email, recipient_name)
 			VALUES (?, ?, ?, ?)
@@ -470,7 +383,7 @@ func getChangedRowCount(db *sql.DB, database, table, column string) (int, error)
 		FROM %s.%s 
 		WHERE %s NOT LIKE 'user%%@example.com'
 	`, database, table, column)
-	
+
 	var count int
 	err := db.QueryRow(query).Scan(&count)
 	return count, err
@@ -482,7 +395,7 @@ func getExcludedRowCount(db *sql.DB, database, table string) (int, error) {
 		FROM %s.%s 
 		WHERE email LIKE '%%@company.com'
 	`, database, table)
-	
+
 	var count int
 	err := db.QueryRow(query).Scan(&count)
 	return count, err
@@ -495,7 +408,7 @@ func getUnchangedExcludedRowCount(db *sql.DB, database, table string) (int, erro
 		WHERE email LIKE '%%@company.com' 
 		AND email NOT LIKE 'random%%'
 	`, database, table)
-	
+
 	var count int
 	err := db.QueryRow(query).Scan(&count)
 	return count, err
@@ -514,7 +427,7 @@ func (c *CustomTestConfigParserWithExclude) ParseConfig(configPath string) (*YAM
 			"acme_corp": {
 				Update: map[string]TableUpdateConfig{
 					c.tableName: {
-						Columns:        c.columns,
+						Columns:       c.columns,
 						ExcludeClause: c.excludeClause,
 					},
 				},
@@ -529,64 +442,6 @@ func (c *CustomTestConfigParserWithExclude) ParseAndDisplayConfig(configPath str
 
 func (c *CustomTestConfigParserWithExclude) ParseAndDisplayConfigFiltered(configPath string, config Config) error {
 	return nil
-}
-
-	// Start MySQL container
-	mysqlC, err := mysql.RunContainer(ctx,
-		mysql.WithDatabase("acme_corp"),
-		mysql.WithUsername("root"),
-		mysql.WithPassword("root"),
-	)
-	if err != nil {
-		t.Fatalf("Failed to start MySQL container: %v", err)
-	}
-	cleanup = func() { mysqlC.Terminate(ctx) }
-
-	// Wait for DB to be ready
-	host, err := mysqlC.Host(ctx)
-	if err != nil {
-		cleanup()
-		t.Fatalf("Failed to get container host: %v", err)
-	}
-	port, err := mysqlC.MappedPort(ctx, "3306")
-	if err != nil {
-		cleanup()
-		t.Fatalf("Failed to get container port: %v", err)
-	}
-	dsn := fmt.Sprintf("root:root@tcp(%s:%s)/mysql?parseTime=true", host, port.Port())
-	for i := 0; i < 30; i++ {
-		db, err = sql.Open("mysql", dsn)
-		if err == nil && db.Ping() == nil {
-			break
-		}
-		time.Sleep(1 * time.Second)
-	}
-	if db == nil {
-		cleanup()
-		t.Fatal("Could not connect to MySQL after waiting")
-	}
-
-	// Run create DB script
-	if err := execSQLFile(db, createDBFile); err != nil {
-		cleanup()
-		t.Fatalf("Failed to create DBs: %v", err)
-	}
-
-	// Run schema and data seed on acme_corp
-	if _, err := db.Exec("USE acme_corp"); err != nil {
-		cleanup()
-		t.Fatalf("Failed to select acme_corp: %v", err)
-	}
-	if err := execSQLFile(db, schemaFile); err != nil {
-		cleanup()
-		t.Fatalf("Failed to seed schema: %v", err)
-	}
-	if err := execSQLFile(db, dataFile); err != nil {
-		cleanup()
-		t.Fatalf("Failed to seed data: %v", err)
-	}
-
-	return mysqlC, db, cleanup
 }
 
 // TestMySQLContainerSeedAndQuery verifies that the MySQL test container starts correctly,
