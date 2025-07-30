@@ -33,6 +33,503 @@ func setupTestMySQLContainer(t *testing.T) (container tc.Container, db *sql.DB, 
 			t.Fatalf("Missing seed file: %s", f)
 		}
 	}
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
+	container, db, cleanup := setupTestMySQLContainer(t)
+	defer cleanup()
+
+	// Create a table without primary key (junction table)
+	if err := createTableWithoutPrimaryKey(db, "email_recipients"); err != nil {
+		t.Fatalf("Failed to create table without primary key: %v", err)
+	}
+
+	// Insert test data
+	if err := insertTestDataForNonPKTable(db, "email_recipients"); err != nil {
+		t.Fatalf("Failed to insert test data: %v", err)
+	}
+
+	// Verify initial data
+	initialCount, err := getRowCount(db, "acme_corp", "email_recipients")
+	if err != nil {
+		t.Fatalf("Failed to get initial row count: %v", err)
+	}
+	if initialCount == 0 {
+		t.Fatal("No test data inserted")
+	}
+
+	// Create custom config parser for the non-PK table
+	configParser := &CustomTestConfigParser{
+		tableName: "email_recipients",
+		columns: map[string]string{
+			"recipient_email": "random_email",
+			"recipient_name":  "random_name",
+		},
+	}
+
+	// Create test config
+	config := Config{
+		DB:     "acme_corp",
+		Tables: []string{"email_recipients"},
+		Config: "tests/config.yaml", // This won't be used due to custom parser
+	}
+
+	// Create cleanup service
+	cleanupService := NewDataCleanupService(
+		&TestContainerConnector{db: db},
+		configParser,
+		NewGofakeitGenerator(),
+		NewSchemaAwareGofakeitGenerator(NewStdLogger()),
+		NewStdLogger(),
+		2, // workers
+		100, // batch size
+	)
+
+	// Process the table
+	stats, err := cleanupService.CleanupData(config)
+	if err != nil {
+		t.Fatalf("Failed to process table without primary key: %v", err)
+	}
+
+	// Verify that processing completed
+	if stats == nil {
+		t.Fatal("No stats returned")
+	}
+
+	// Verify that some rows were processed
+	if stats.TotalProcessed == 0 {
+		t.Error("No rows were processed")
+	}
+
+	// Verify that the data was actually changed
+	changedCount, err := getChangedRowCount(db, "acme_corp", "email_recipients", "recipient_email")
+	if err != nil {
+		t.Fatalf("Failed to get changed row count: %v", err)
+	}
+
+	if changedCount == 0 {
+		t.Error("No rows were actually updated")
+	}
+
+	t.Logf("Successfully processed %d rows using offset-based processing", stats.TotalProcessed)
+}
+
+
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
+	container, db, cleanup := setupTestMySQLContainer(t)
+	defer cleanup()
+
+	// Create a table without primary key (junction table)
+	if err := createTableWithoutPrimaryKey(db, "email_recipients"); err != nil {
+		t.Fatalf("Failed to create table without primary key: %v", err)
+	}
+
+	// Insert test data
+	if err := insertTestDataForNonPKTable(db, "email_recipients"); err != nil {
+		t.Fatalf("Failed to insert test data: %v", err)
+	}
+
+	// Verify initial data
+	initialCount, err := getRowCount(db, "acme_corp", "email_recipients")
+	if err != nil {
+		t.Fatalf("Failed to get initial row count: %v", err)
+	}
+	if initialCount == 0 {
+		t.Fatal("No test data inserted")
+	}
+
+	// Create service with offset-based processing
+	service := createTestService(db, 2, "100") // 2 workers, 100 batch size
+
+	// Create custom config parser for the non-PK table
+	configParser := &CustomTestConfigParser{
+		tableName: "email_recipients",
+		columns: map[string]string{
+			"recipient_email": "random_email",
+			"recipient_name":  "random_name",
+		},
+	}
+
+	// Create test config
+	config := Config{
+		DB:     "acme_corp",
+		Tables: []string{"email_recipients"},
+		Config: "tests/config.yaml", // This won't be used due to custom parser
+	}
+
+	// Create cleanup service
+	cleanupService := NewDataCleanupService(
+		&TestContainerConnector{db: db},
+		configParser,
+		NewGofakeitGenerator(),
+		NewSchemaAwareGofakeitGenerator(NewStdLogger()),
+		NewStdLogger(),
+		2, // workers
+		100, // batch size
+	)
+
+	// Process the table
+	stats, err := cleanupService.CleanupData(config)
+	if err != nil {
+		t.Fatalf("Failed to process table without primary key: %v", err)
+	}
+
+	// Verify that processing completed
+	if stats == nil {
+		t.Fatal("No stats returned")
+	}
+
+	// Verify that some rows were processed
+	if stats.TotalProcessed == 0 {
+		t.Error("No rows were processed")
+	}
+
+	// Verify that the data was actually changed
+	changedCount, err := getChangedRowCount(db, "acme_corp", "email_recipients", "recipient_email")
+	if err != nil {
+		t.Fatalf("Failed to get changed row count: %v", err)
+	}
+
+	if changedCount == 0 {
+		t.Error("No rows were actually updated")
+	}
+
+	t.Logf("Successfully processed %d rows using offset-based processing", stats.TotalProcessed)
+}
+
+// TestTableWithoutPrimaryKeyParallelProcessing tests that offset-based processing
+// works correctly with multiple workers
+func TestTableWithoutPrimaryKeyParallelProcessing(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
+	container, db, cleanup := setupTestMySQLContainer(t)
+	defer cleanup()
+
+	// Create a larger table without primary key
+	if err := createLargeTableWithoutPrimaryKey(db, "large_junction_table"); err != nil {
+		t.Fatalf("Failed to create large table without primary key: %v", err)
+	}
+
+	// Insert more test data
+	if err := insertLargeTestDataForNonPKTable(db, "large_junction_table"); err != nil {
+		t.Fatalf("Failed to insert large test data: %v", err)
+	}
+
+	// Verify initial data
+	initialCount, err := getRowCount(db, "acme_corp", "large_junction_table")
+	if err != nil {
+		t.Fatalf("Failed to get initial row count: %v", err)
+	}
+	if initialCount < 1000 {
+		t.Fatalf("Expected at least 1000 rows, got %d", initialCount)
+	}
+
+	// Create service with multiple workers
+	service := createTestService(db, 4, "200") // 4 workers, 200 batch size
+
+	// Create custom config parser
+	configParser := &CustomTestConfigParser{
+		tableName: "large_junction_table",
+		columns: map[string]string{
+			"data_field": "random_text",
+			"status":     "static_value: 1",
+		},
+	}
+
+	// Create test config
+	config := Config{
+		DB:     "acme_corp",
+		Tables: []string{"large_junction_table"},
+		Config: "tests/config.yaml",
+	}
+
+	// Create cleanup service
+	cleanupService := NewDataCleanupService(
+		&TestContainerConnector{db: db},
+		configParser,
+		NewGofakeitGenerator(),
+		NewSchemaAwareGofakeitGenerator(NewStdLogger()),
+		NewStdLogger(),
+		4, // workers
+		200, // batch size
+	)
+
+	// Process the table
+	stats, err := cleanupService.CleanupData(config)
+	if err != nil {
+		t.Fatalf("Failed to process large table without primary key: %v", err)
+	}
+
+	// Verify that processing completed
+	if stats == nil {
+		t.Fatal("No stats returned")
+	}
+
+	// Verify that most rows were processed
+	if stats.TotalProcessed < initialCount*9/10 { // At least 90% processed
+		t.Errorf("Expected at least %d rows processed, got %d", initialCount*9/10, stats.TotalProcessed)
+	}
+
+	// Verify that the data was actually changed
+	changedCount, err := getChangedRowCount(db, "acme_corp", "large_junction_table", "data_field")
+	if err != nil {
+		t.Fatalf("Failed to get changed row count: %v", err)
+	}
+
+	if changedCount < initialCount*8/10 { // At least 80% changed
+		t.Errorf("Expected at least %d rows to be changed, got %d", initialCount*8/10, changedCount)
+	}
+
+	t.Logf("Successfully processed %d rows using parallel offset-based processing", stats.TotalProcessed)
+}
+
+// TestTableWithoutPrimaryKeyExcludeClause tests that exclude clauses work correctly
+// with offset-based processing
+func TestTableWithoutPrimaryKeyExcludeClause(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
+	container, db, cleanup := setupTestMySQLContainer(t)
+	defer cleanup()
+
+	// Create a table without primary key
+	if err := createTableWithoutPrimaryKey(db, "test_exclude_table"); err != nil {
+		t.Fatalf("Failed to create table without primary key: %v", err)
+	}
+
+	// Insert test data with some rows that should be excluded
+	if err := insertTestDataWithExcludePattern(db, "test_exclude_table"); err != nil {
+		t.Fatalf("Failed to insert test data: %v", err)
+	}
+
+	// Get initial counts
+	totalCount, err := getRowCount(db, "acme_corp", "test_exclude_table")
+	if err != nil {
+		t.Fatalf("Failed to get total row count: %v", err)
+	}
+
+	excludedCount, err := getExcludedRowCount(db, "acme_corp", "test_exclude_table")
+	if err != nil {
+		t.Fatalf("Failed to get excluded row count: %v", err)
+	}
+
+	expectedProcessed := totalCount - excludedCount
+
+	// Create custom config parser with exclude clause
+	configParser := &CustomTestConfigParserWithExclude{
+		tableName: "test_exclude_table",
+		columns: map[string]string{
+			"email": "random_email",
+		},
+		excludeClause: "email LIKE '%@company.com'",
+	}
+
+	// Create test config
+	config := Config{
+		DB:     "acme_corp",
+		Tables: []string{"test_exclude_table"},
+		Config: "tests/config.yaml",
+	}
+
+	// Create cleanup service
+	cleanupService := NewDataCleanupService(
+		&TestContainerConnector{db: db},
+		configParser,
+		NewGofakeitGenerator(),
+		NewSchemaAwareGofakeitGenerator(NewStdLogger()),
+		NewStdLogger(),
+		2, // workers
+		100, // batch size
+	)
+
+	// Process the table
+	stats, err := cleanupService.CleanupData(config)
+	if err != nil {
+		t.Fatalf("Failed to process table with exclude clause: %v", err)
+	}
+
+	// Verify that processing completed
+	if stats == nil {
+		t.Fatal("No stats returned")
+	}
+
+	// Verify that the correct number of rows were processed
+	if stats.TotalProcessed != expectedProcessed {
+		t.Errorf("Expected %d rows processed, got %d", expectedProcessed, stats.TotalProcessed)
+	}
+
+	// Verify that excluded rows were not changed
+	unchangedCount, err := getUnchangedExcludedRowCount(db, "acme_corp", "test_exclude_table")
+	if err != nil {
+		t.Fatalf("Failed to get unchanged excluded row count: %v", err)
+	}
+
+	if unchangedCount != excludedCount {
+		t.Errorf("Expected %d excluded rows to remain unchanged, got %d", excludedCount, unchangedCount)
+	}
+
+	t.Logf("Successfully processed %d rows while excluding %d rows", stats.TotalProcessed, excludedCount)
+}
+
+// Helper functions for non-PK table tests
+
+func createTableWithoutPrimaryKey(db *sql.DB, tableName string) error {
+	query := fmt.Sprintf(`
+		CREATE TABLE %s (
+			id INT,
+			email_history_id BIGINT,
+			recipient_email VARCHAR(255),
+			recipient_name VARCHAR(255),
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			KEY idx_email_history_id (email_history_id),
+			KEY idx_recipient_email (recipient_email)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+	`, tableName)
+	_, err := db.Exec(query)
+	return err
+}
+
+func createLargeTableWithoutPrimaryKey(db *sql.DB, tableName string) error {
+	query := fmt.Sprintf(`
+		CREATE TABLE %s (
+			id INT,
+			group_id INT,
+			data_field TEXT,
+			status INT DEFAULT 0,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			KEY idx_group_id (group_id),
+			KEY idx_status (status)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+	`, tableName)
+	_, err := db.Exec(query)
+	return err
+}
+
+func insertTestDataForNonPKTable(db *sql.DB, tableName string) error {
+	// Insert 500 test records
+	for i := 1; i <= 500; i++ {
+		query := fmt.Sprintf(`
+			INSERT INTO %s (id, email_history_id, recipient_email, recipient_name)
+			VALUES (?, ?, ?, ?)
+		`, tableName)
+		_, err := db.Exec(query, i, i*10, fmt.Sprintf("user%d@example.com", i), fmt.Sprintf("User %d", i))
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func insertLargeTestDataForNonPKTable(db *sql.DB, tableName string) error {
+	// Insert 2000 test records
+	for i := 1; i <= 2000; i++ {
+		query := fmt.Sprintf(`
+			INSERT INTO %s (id, group_id, data_field, status)
+			VALUES (?, ?, ?, ?)
+		`, tableName)
+		_, err := db.Exec(query, i, i%100, fmt.Sprintf("Data for group %d", i%100), i%3)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func insertTestDataWithExcludePattern(db *sql.DB, tableName string) error {
+	// Insert 300 test records, some with company.com emails
+	for i := 1; i <= 300; i++ {
+		var email string
+		if i%3 == 0 {
+			email = fmt.Sprintf("user%d@company.com", i)
+		} else {
+			email = fmt.Sprintf("user%d@example.com", i)
+		}
+		
+		query := fmt.Sprintf(`
+			INSERT INTO %s (id, email_history_id, recipient_email, recipient_name)
+			VALUES (?, ?, ?, ?)
+		`, tableName)
+		_, err := db.Exec(query, i, i*10, email, fmt.Sprintf("User %d", i))
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func getChangedRowCount(db *sql.DB, database, table, column string) (int, error) {
+	query := fmt.Sprintf(`
+		SELECT COUNT(*) 
+		FROM %s.%s 
+		WHERE %s NOT LIKE 'user%%@example.com'
+	`, database, table, column)
+	
+	var count int
+	err := db.QueryRow(query).Scan(&count)
+	return count, err
+}
+
+func getExcludedRowCount(db *sql.DB, database, table string) (int, error) {
+	query := fmt.Sprintf(`
+		SELECT COUNT(*) 
+		FROM %s.%s 
+		WHERE email LIKE '%%@company.com'
+	`, database, table)
+	
+	var count int
+	err := db.QueryRow(query).Scan(&count)
+	return count, err
+}
+
+func getUnchangedExcludedRowCount(db *sql.DB, database, table string) (int, error) {
+	query := fmt.Sprintf(`
+		SELECT COUNT(*) 
+		FROM %s.%s 
+		WHERE email LIKE '%%@company.com' 
+		AND email NOT LIKE 'random%%'
+	`, database, table)
+	
+	var count int
+	err := db.QueryRow(query).Scan(&count)
+	return count, err
+}
+
+// CustomTestConfigParserWithExclude extends CustomTestConfigParser to support exclude clauses
+type CustomTestConfigParserWithExclude struct {
+	tableName     string
+	columns       map[string]string
+	excludeClause string
+}
+
+func (c *CustomTestConfigParserWithExclude) ParseConfig(configPath string) (*YAMLConfig, error) {
+	return &YAMLConfig{
+		Databases: map[string]DatabaseConfig{
+			"acme_corp": {
+				Update: map[string]TableUpdateConfig{
+					c.tableName: {
+						Columns:        c.columns,
+						ExcludeClause: c.excludeClause,
+					},
+				},
+			},
+		},
+	}, nil
+}
+
+func (c *CustomTestConfigParserWithExclude) ParseAndDisplayConfig(configPath string) error {
+	return nil
+}
+
+func (c *CustomTestConfigParserWithExclude) ParseAndDisplayConfigFiltered(configPath string, config Config) error {
+	return nil
+}
 
 	// Start MySQL container
 	mysqlC, err := mysql.RunContainer(ctx,

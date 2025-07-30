@@ -58,6 +58,22 @@ Process all tables defined in the configuration:
 ./bin/mysql_cleanup -host=localhost -user=root -port=3306 -password=mypass -db=mydb -all-tables
 ```
 
+### Tables Without Primary Keys
+
+The tool automatically detects tables without primary keys and uses offset-based processing:
+
+```bash
+# For junction/mapping tables without primary keys
+./bin/mysql_cleanup -host=localhost -user=root -port=3306 -password=mypass -db=mydb -table=email_history_to
+```
+
+**Features for tables without primary keys:**
+- Automatic detection and offset-based processing
+- Parallel batch processing with `LIMIT`/`OFFSET`
+- Progress tracking and ETA calculation
+- Exclude clause support
+- **Note**: Range filtering is not supported for tables without primary keys
+
 ### Environment Variables
 
 You can set environment variables:
@@ -167,6 +183,15 @@ You can specify batch sizes using humanized formats for easier configuration of 
 ## Configuration File Format
 
 The application uses YAML configuration files to define table update rules. The configuration supports both random data generation and static values.
+
+### Table Requirements
+
+The tool supports two types of tables:
+
+1. **Tables with Primary Keys** (Recommended): Uses primary key-based batch processing for optimal performance
+2. **Tables without Primary Keys**: Uses offset-based processing with `LIMIT`/`OFFSET` for junction/mapping tables
+
+**Note**: Range filtering (`-range` parameter) is only supported for tables with primary keys.
 
 ### Configuration Structure
 
@@ -467,6 +492,22 @@ tests/
         ├── 01-schema.sql  # Database schema
         └── 02-data.sql    # Sample test data
 ```
+
+## Troubleshooting
+
+### Common Issues
+
+**"Table structure issue - the specified table does not have a primary key defined"**
+
+This error occurs when trying to process a table without a primary key using the old version of the tool. The new version automatically handles tables without primary keys using offset-based processing.
+
+**"Range filtering is not supported for tables without primary keys"**
+
+Range filtering (`-range` parameter) requires a primary key to efficiently filter rows. For tables without primary keys, process the entire table or use exclude clauses in the configuration.
+
+**"Failed to generate fake value - unknown faker type: static_value: X"**
+
+This error occurs when using static values with an older version of the tool. The new version supports static values with the `static_value:` prefix.
 
 ## Test Suite Overview
 

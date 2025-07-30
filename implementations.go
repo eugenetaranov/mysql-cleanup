@@ -462,6 +462,18 @@ func (d *DataCleanupService) UpdateTableData(db *sql.DB, databaseName, tableName
 	// Discover primary key columns
 	pkCols, err := getPrimaryKeyColumns(db, databaseName, tableName, d.logger)
 	if err != nil {
+		// Check if it's a "no primary key" error
+		if strings.Contains(err.Error(), "has no primary key defined") {
+			d.logger.Info(fmt.Sprintf("Table has no primary key, using offset-based processing - table: %s", tableName))
+
+			// Check if range filtering is requested (not supported for offset-based processing)
+			if idRange.HasRange {
+				return 0, fmt.Errorf("range filtering is not supported for tables without primary keys")
+			}
+
+			// Use offset-based processing for tables without primary keys
+			return d.processTableWithoutPrimaryKey(db, databaseName, tableName, tableConfig, idRange)
+		}
 		return 0, fmt.Errorf("failed to discover primary key: %w", err)
 	}
 
@@ -519,6 +531,329 @@ func (d *DataCleanupService) UpdateTableData(db *sql.DB, databaseName, tableName
 	duration := time.Since(startTime)
 	d.logger.Info(fmt.Sprintf("Table processing completed - table: %s, processed: %d, range: %s, duration: %s, rows_per_second: %.1f",
 		tableName, totalProcessed, idRange.String(), FormatDuration(duration), float64(totalProcessed)/duration.Seconds()))
+
+	return totalProcessed, nil
+}
+
+// processTableWithOffset processes a table without primary key using LIMIT/OFFSET
+func (d *DataCleanupService) processTableWithOffset(db *sql.DB, databaseName, tableName string, tableConfig TableUpdateConfig, validColumns map[string]string, idRange *IDRange) (int, error) {
+	// Build WHERE clause with exclude conditions (no range filtering for offset-based processing)
+	var whereConditions []string
+
+	// Add exclude clause if specified
+	if tableConfig.ExcludeClause != "" {
+		whereConditions = append(whereConditions, fmt.Sprintf("NOT (%s)", tableConfig.ExcludeClause))
+		d.logger.Debug(fmt.Sprintf("Using exclude clause - exclude_clause: %s", tableConfig.ExcludeClause))
+	}
+
+	// Build final WHERE clause
+	whereClause := ""
+	if len(whereConditions) > 0 {
+		whereClause = "WHERE " + strings.Join(whereConditions, " AND ")
+	}
+
+	// Get total row count for progress tracking
+	totalRows, err := getTableRowCount(db, databaseName, tableName, whereClause)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get row count: %w", err)
+	}
+
+	if totalRows == 0 {
+		d.logger.Info(fmt.Sprintf("Table processing completed - table: %s, no rows to update", tableName))
+		return 0, nil
+	}
+
+	d.logger.Info(fmt.Sprintf("Starting offset-based processing - table: %s, total_rows: %d, workers: %d, batch_size: %d",
+		tableName, totalRows, d.batchProcessor.workerCount, d.batchProcessor.batchSize))
+
+	// Calculate total batches
+	totalBatches := (totalRows + d.batchProcessor.batchSize - 1) / d.batchProcessor.batchSize
+
+	// Process batches in parallel using offset
+	totalProcessed, totalErrors, batchErr := d.processBatchesInParallelOffset(db, databaseName, tableName, tableConfig, validColumns, whereClause, totalRows, totalBatches)
+
+	if batchErr != nil {
+		return 0, batchErr
+	}
+
+	if totalErrors > 0 {
+		d.logger.Warn(fmt.Sprintf("Table processing had errors - table: %s, processed: %d, errors: %d",
+			tableName, totalProcessed, totalErrors))
+	}
+
+	d.logger.Info(fmt.Sprintf("Offset-based processing completed - table: %s, processed: %d, errors: %d",
+		tableName, totalProcessed, totalErrors))
+
+	return totalProcessed, nil
+}
+
+// processBatchesInParallelOffset processes row batches using LIMIT/OFFSET (for tables without PK)
+func (d *DataCleanupService) processBatchesInParallelOffset(db *sql.DB, databaseName, tableName string, tableConfig TableUpdateConfig, validColumns map[string]string, whereClause string, totalRows, totalBatches int) (int, int, error) {
+	// Reset worker batch times for fresh ETA calculation
+	d.resetWorkerBatchTimes()
+
+	jobChan := make(chan BatchJob, totalBatches)
+	resultChan := make(chan BatchResult, totalBatches)
+
+	// Create context for cancellation when errors occur
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var wg sync.WaitGroup
+	for i := 0; i < d.batchProcessor.workerCount; i++ {
+		wg.Add(1)
+		uniqueSeed := time.Now().UnixNano() + int64(i*1000000) + rand.Int63()
+		workerGenerator := NewSchemaAwareGofakeitGenerator(d.logger)
+		workerGenerator.faker = gofakeit.New(uniqueSeed)
+		go d.workerOffsetWithContext(ctx, i, db, workerGenerator, jobChan, resultChan, &wg)
+		time.Sleep(time.Microsecond)
+	}
+
+	go func() {
+		defer close(jobChan)
+		for batchNum := 0; batchNum < totalBatches; batchNum++ {
+			offset := batchNum * d.batchProcessor.batchSize
+			limit := d.batchProcessor.batchSize
+			if offset+limit > totalRows {
+				limit = totalRows - offset
+			}
+
+			job := BatchJob{
+				DatabaseName: databaseName,
+				TableName:    tableName,
+				TableConfig:  tableConfig,
+				ValidColumns: validColumns,
+				BatchNumber:  batchNum + 1,
+				TotalBatches: totalBatches,
+				WorkerID:     batchNum % d.batchProcessor.workerCount,
+				RowRange:     fmt.Sprintf("%d-%d", offset+1, offset+limit),
+			}
+
+			select {
+			case jobChan <- job:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	var totalProcessed, totalErrors int
+	var errors []error
+
+	for result := range resultChan {
+		totalProcessed += result.ProcessedCount
+		totalErrors += result.ErrorCount
+		errors = append(errors, result.Errors...)
+
+		// Log progress
+		if result.BatchNumber%10 == 0 || result.BatchNumber == result.TotalBatches {
+			eta := d.calculateETA(result.WorkerID, result.BatchNumber, result.TotalBatches)
+			d.logger.Info(fmt.Sprintf("Batch progress - table: %s, batch: %d/%d, processed: %d, errors: %d, eta: %s",
+				tableName, result.BatchNumber, result.TotalBatches, totalProcessed, totalErrors, eta))
+		}
+
+		// Record batch time for ETA calculation
+		d.recordBatchTime(result.WorkerID, result.Duration)
+	}
+
+	if len(errors) > 0 {
+		d.logger.Warn(fmt.Sprintf("Batch processing errors - table: %s, error_count: %d", tableName, len(errors)))
+		for _, err := range errors {
+			d.logger.Warn(fmt.Sprintf("Batch error - table: %s, error: %s", tableName, err))
+		}
+	}
+
+	return totalProcessed, totalErrors, nil
+}
+
+// workerOffsetWithContext processes offset-based batches
+func (d *DataCleanupService) workerOffsetWithContext(ctx context.Context, workerID int, db *sql.DB, generator *SchemaAwareGofakeitGenerator, jobChan <-chan BatchJob, resultChan chan<- BatchResult, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	for {
+		select {
+		case job, ok := <-jobChan:
+			if !ok {
+				return
+			}
+			processed, errors, sampleData, err := d.processBatchOffset(db, generator, job)
+			result := BatchResult{
+				BatchJob:       job,
+				ProcessedCount: processed,
+				ErrorCount:     errors,
+				Duration:       time.Since(time.Now()), // Will be set properly in processBatchOffset
+				Errors:         []error{err},
+				SampleData:     sampleData,
+			}
+			if err != nil {
+				result.Errors = append(result.Errors, err)
+			}
+			select {
+			case resultChan <- result:
+			case <-ctx.Done():
+				return
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// processBatchOffset processes a single batch using LIMIT/OFFSET
+func (d *DataCleanupService) processBatchOffset(db *sql.DB, generator *SchemaAwareGofakeitGenerator, job BatchJob) (int, int, []SampleRowData, error) {
+	startTime := time.Now()
+
+	// Parse offset and limit from RowRange
+	parts := strings.Split(job.RowRange, "-")
+	if len(parts) != 2 {
+		return 0, 0, nil, fmt.Errorf("invalid row range format: %s", job.RowRange)
+	}
+
+	startRow, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return 0, 0, nil, fmt.Errorf("invalid start row: %s", parts[0])
+	}
+
+	endRow, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return 0, 0, nil, fmt.Errorf("invalid end row: %s", parts[1])
+	}
+
+	offset := startRow - 1
+	limit := endRow - startRow + 1
+
+	// Build WHERE clause
+	whereClause := ""
+	if job.TableConfig.ExcludeClause != "" {
+		whereClause = fmt.Sprintf("WHERE NOT (%s)", job.TableConfig.ExcludeClause)
+	}
+
+	// Build UPDATE query with LIMIT/OFFSET
+	updates := make([]string, 0)
+	args := make([]interface{}, 0)
+
+	for column, fakerType := range job.ValidColumns {
+		// Check if column exists
+		exists, err := d.columnExists(db, job.DatabaseName, job.TableName, column)
+		if err != nil {
+			d.logger.Warn(fmt.Sprintf("Failed to check column - table: %s, column: %s, error: %s", job.TableName, column, err))
+			continue
+		}
+		if !exists {
+			d.logger.Warn(fmt.Sprintf("Column does not exist, skipping - table: %s, column: %s", job.TableName, column))
+			continue
+		}
+
+		// Get column info
+		d.cacheMutex.RLock()
+		info := d.columnInfoCache[job.TableName][column]
+		d.cacheMutex.RUnlock()
+
+		if info == nil {
+			// Fetch column info if not cached
+			info, err = generator.GetColumnInfo(job.DatabaseName, job.TableName, column, db)
+			if err != nil {
+				d.logger.Warn(fmt.Sprintf("Failed to get column info - table: %s, column: %s, error: %s", job.TableName, column, err))
+				continue
+			}
+			// Cache the info
+			d.cacheMutex.Lock()
+			if d.columnInfoCache[job.TableName] == nil {
+				d.columnInfoCache[job.TableName] = make(map[string]*ColumnInfo)
+			}
+			d.columnInfoCache[job.TableName][column] = info
+			d.cacheMutex.Unlock()
+		}
+
+		// Generate fake value
+		fakeValue, err := generator.GenerateFakeValue(fakerType, info)
+		if err != nil {
+			d.logger.Warn(fmt.Sprintf("Failed to generate fake value - table: %s, column: %s, faker_type: %s, error: %s", job.TableName, column, fakerType, err))
+			continue
+		}
+
+		updates = append(updates, fmt.Sprintf("`%s` = ?", column))
+		args = append(args, fakeValue)
+	}
+
+	if len(updates) == 0 {
+		return 0, 0, nil, nil
+	}
+
+	// Build the UPDATE query
+	query := fmt.Sprintf("UPDATE `%s`.`%s` SET %s %s LIMIT %d OFFSET %d",
+		job.DatabaseName, job.TableName, strings.Join(updates, ", "), whereClause, limit, offset)
+
+	d.logger.Debug(fmt.Sprintf("Executing offset-based update - table: %s, batch: %d, offset: %d, limit: %d, query: %s",
+		job.TableName, job.BatchNumber, offset, limit, query))
+
+	// Execute the UPDATE query
+	result, err := db.Exec(query, args...)
+	if err != nil {
+		return 0, 1, nil, fmt.Errorf("failed to execute offset-based UPDATE query: %w", err)
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	duration := time.Since(startTime)
+
+	d.logger.Debug(fmt.Sprintf("Offset-based batch completed - table: %s, batch: %d, rows_affected: %d, duration: %s",
+		job.TableName, job.BatchNumber, rowsAffected, FormatDuration(duration)))
+
+	return int(rowsAffected), 0, nil, nil
+}
+
+// processTableWithoutPrimaryKey handles tables without primary keys using offset-based processing
+func (d *DataCleanupService) processTableWithoutPrimaryKey(db *sql.DB, databaseName, tableName string, tableConfig TableUpdateConfig, idRange *IDRange) (int, error) {
+	// Pre-cache column info to avoid concurrent map access issues
+	d.cacheMutex.Lock()
+	if _, exists := d.columnInfoCache[tableName]; !exists {
+		d.columnInfoCache[tableName] = make(map[string]*ColumnInfo)
+	}
+	d.cacheMutex.Unlock()
+
+	for columnName := range tableConfig.Columns {
+		info, err := d.schemaAwareGenerator.GetColumnInfo(databaseName, tableName, columnName, db)
+		if err != nil {
+			d.logger.Warn(fmt.Sprintf("Failed to pre-cache column info - table: %s, column: %s, error: %s", tableName, columnName, err))
+			continue
+		}
+		d.cacheMutex.Lock()
+		d.columnInfoCache[tableName][columnName] = info
+		d.cacheMutex.Unlock()
+	}
+
+	// Validate columns before starting the parallel processing
+	validColumns := make(map[string]string)
+	for col, fakerType := range tableConfig.Columns {
+		exists, err := d.columnExists(db, databaseName, tableName, col)
+		if err != nil {
+			d.logger.Warn(fmt.Sprintf("Failed to check column - table: %s, column: %s, error: %s", tableName, col, err))
+			continue
+		}
+		if !exists {
+			d.logger.Warn(fmt.Sprintf("Column does not exist, skipping - table: %s, column: %s", tableName, col))
+			continue
+		}
+		validColumns[col] = fakerType
+	}
+
+	if len(validColumns) == 0 {
+		d.logger.Warn(fmt.Sprintf("No valid columns found for update - table: %s", tableName))
+		return 0, nil
+	}
+
+	d.logger.Debug(fmt.Sprintf("Pre-validated columns - table: %s, valid_columns: %d", tableName, len(validColumns)))
+
+	// Process the table using offset-based approach
+	totalProcessed, err := d.processTableWithOffset(db, databaseName, tableName, tableConfig, validColumns, idRange)
+	if err != nil {
+		return 0, err
+	}
 
 	return totalProcessed, nil
 }
@@ -1081,6 +1416,17 @@ func getPrimaryKeyColumns(db *sql.DB, databaseName, tableName string, logger Log
 	}
 	logger.Info(fmt.Sprintf("Discovered primary key columns - table: %s, pk_columns: %v", tableName, cols))
 	return cols, nil
+}
+
+// getTableRowCount returns the total number of rows in a table
+func getTableRowCount(db *sql.DB, databaseName, tableName string, whereClause string) (int, error) {
+	query := fmt.Sprintf("SELECT COUNT(*) FROM `%s`.`%s` %s", databaseName, tableName, whereClause)
+	var count int
+	err := db.QueryRow(query).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get row count for table %s: %w", tableName, err)
+	}
+	return count, nil
 }
 
 // GofakeitGenerator implements FakeDataGenerator
