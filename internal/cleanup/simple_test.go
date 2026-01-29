@@ -1,4 +1,4 @@
-package main
+package cleanup
 
 import (
 	"context"
@@ -163,7 +163,7 @@ func TestParseHumanizedBatchSize(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		result, err := parseHumanizedBatchSize(test.input)
+		result, err := ParseHumanizedBatchSize(test.input)
 
 		if test.hasError {
 			if err == nil {
@@ -184,14 +184,14 @@ func TestSingleTableModeChecksBothSections(t *testing.T) {
 	config := Config{
 		DB:     "testdb",
 		Tables: []string{"users"},
-		Config: "tests/config.yaml",
+		Config: "../../tests/config.yaml",
 	}
 
 	// Create service
-	service := createService(false, 1, "1K", "")
+	service := createTestCleanupService(false, 1, 1000)
 
 	// Parse config to verify the new behavior
-	err := service.configParser.ParseAndDisplayConfigFiltered(config.Config, config)
+	err := service.ConfigParser.ParseAndDisplayConfigFiltered(config.Config, config)
 	if err != nil {
 		t.Fatalf("Failed to parse config: %v", err)
 	}
@@ -208,14 +208,14 @@ func TestTableWithoutPrimaryKey(t *testing.T) {
 	config := Config{
 		DB:     "testdb",
 		Tables: []string{"email_history_to"},
-		Config: "tests/config.yaml",
+		Config: "../../tests/config.yaml",
 	}
 
 	// Create service
-	service := createService(false, 1, "1K", "")
+	service := createTestCleanupService(false, 1, 1000)
 
 	// Parse config to verify the new behavior
-	err := service.configParser.ParseAndDisplayConfigFiltered(config.Config, config)
+	err := service.ConfigParser.ParseAndDisplayConfigFiltered(config.Config, config)
 	if err != nil {
 		t.Fatalf("Failed to parse config: %v", err)
 	}
@@ -567,4 +567,37 @@ func TestNonPKTableBatchOverlap(t *testing.T) {
 	}
 
 	t.Log("Offset-based batches have no overlaps and cover all rows")
+}
+
+// createTestCleanupService creates a service for testing
+func createTestCleanupService(debug bool, workers int, batchSize int) *Service {
+	// Create concrete implementations
+	dbConnector := &MySQLConnector{}
+	fileReader := &OSFileReader{}
+
+	// Create logger
+	var logger Logger = &StdLogger{}
+
+	// Create debug-aware logger if debug mode is enabled
+	if debug {
+		logger = &DebugLogger{Logger: logger, DebugMode: true}
+	}
+
+	s3Handler := NewS3Handler(logger)
+	configParser := NewYAMLConfigParser(fileReader, s3Handler, logger)
+	fakeGenerator := NewGofakeitGenerator()
+	schemaAwareGenerator := NewSchemaAwareGofakeitGenerator(logger)
+	dataCleaner := NewDataCleanupService(dbConnector, configParser, fakeGenerator, schemaAwareGenerator, logger, workers, batchSize)
+	tableFetcher := NewMySQLTableFetcher(dbConnector, logger)
+
+	// Create and return the service
+	return &Service{
+		DBConnector:   dbConnector,
+		ConfigParser:  configParser,
+		DataCleaner:   dataCleaner,
+		FakeGenerator: fakeGenerator,
+		FileReader:    fileReader,
+		Logger:        logger,
+		TableFetcher:  tableFetcher,
+	}
 }

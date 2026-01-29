@@ -1,10 +1,27 @@
-package main
+package cleanup
 
 import (
 	"fmt"
 	"strconv"
 	"strings"
 )
+
+// Config holds the command line configuration
+type Config struct {
+	Host      string
+	User      string
+	Port      string
+	Password  string
+	Config    string
+	DB        string
+	Tables    []string // Changed from Table string to Tables []string
+	AllTables bool
+	Debug     bool
+	Workers   int
+	BatchSize string // Batch size for updates (e.g., "1", "1K", "10K", "100K" - supports K/M/B suffixes)
+	Range     string // ID range specification (e.g., "0:1000", "1000:", ":100K", "100K:1M" - colon required)
+	LogFile   string // Log file path for saving logs
+}
 
 // YAMLConfig represents the structure of the YAML configuration file
 type YAMLConfig struct {
@@ -137,4 +154,41 @@ func (r *IDRange) String() string {
 		return fmt.Sprintf("≤%d", *r.End)
 	}
 	return "invalid range"
+}
+
+// ParseHumanizedBatchSize parses batch sizes with K, M, B suffixes (e.g., "1K" = 1000)
+// This is exported for use by tests
+func ParseHumanizedBatchSize(batchSizeStr string) (int, error) {
+	batchSizeStr = strings.TrimSpace(batchSizeStr)
+	if batchSizeStr == "" {
+		return 0, fmt.Errorf("empty batch size")
+	}
+
+	// Handle suffixes
+	multiplier := 1
+	upperStr := strings.ToUpper(batchSizeStr)
+
+	if strings.HasSuffix(upperStr, "K") {
+		multiplier = 1000
+		batchSizeStr = batchSizeStr[:len(batchSizeStr)-1]
+	} else if strings.HasSuffix(upperStr, "M") {
+		multiplier = 1000000
+		batchSizeStr = batchSizeStr[:len(batchSizeStr)-1]
+	} else if strings.HasSuffix(upperStr, "B") {
+		multiplier = 1000000000
+		batchSizeStr = batchSizeStr[:len(batchSizeStr)-1]
+	}
+
+	// Parse the base number
+	baseNum, err := strconv.Atoi(batchSizeStr)
+	if err != nil {
+		return 0, fmt.Errorf("invalid batch size format: %s", batchSizeStr)
+	}
+
+	result := baseNum * multiplier
+	if result <= 0 {
+		return 0, fmt.Errorf("batch size must be positive")
+	}
+
+	return result, nil
 }

@@ -19,7 +19,7 @@ COPY . .
 
 # Build the application for the target architecture
 # Buildx will handle multi-arch builds by running this in separate containers
-RUN CGO_ENABLED=0 go build -a -installsuffix cgo -o mysql_cleanup .
+RUN CGO_ENABLED=0 go build -a -installsuffix cgo -o mysql_cleanup ./cmd/mysql-cleanup
 
 # Final stage
 FROM alpine:latest

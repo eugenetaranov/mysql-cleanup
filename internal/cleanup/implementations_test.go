@@ -1,4 +1,4 @@
-package main
+package cleanup
 
 import (
 	"fmt"
@@ -85,7 +85,7 @@ func TestYAMLParsing(t *testing.T) {
 	parser := NewYAMLConfigParser(fileReader, s3Handler, logger)
 
 	// Test parsing a valid config file
-	config, err := parser.ParseConfig("tests/config.yaml")
+	config, err := parser.ParseConfig("../../tests/config.yaml")
 	if err != nil {
 		t.Errorf("Should parse valid config file: %v", err)
 	}

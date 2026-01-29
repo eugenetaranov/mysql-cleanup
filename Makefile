@@ -7,17 +7,17 @@ LDFLAGS := -ldflags "-X main.version=$(VERSION) -X main.gitCommit=$(COMMIT)"
 
 build:
 	@mkdir -p bin
-	go build $(LDFLAGS) -o $(BINARY) .
+	go build $(LDFLAGS) -o $(BINARY) ./cmd/mysql-cleanup
 
 test:
-	go test -v -race ./...
+	go test -v -race ./internal/cleanup/...
 
 test-cover:
-	go test -v -race -coverprofile=coverage.out ./...
+	go test -v -race -coverprofile=coverage.out ./internal/cleanup/...
 	go tool cover -html=coverage.out -o coverage.html
 
 test-integration:
-	go test -v -tags=integration -timeout 10m ./...
+	go test -v -tags=integration -timeout 10m ./integration/...
 
 test-all: test test-integration
 
@@ -32,14 +32,14 @@ lint:
 
 fmt:
 	go fmt ./...
-	goimports -w .
+	@which goimports > /dev/null 2>&1 && goimports -w . || echo "goimports not installed, skipping (install with: go install golang.org/x/tools/cmd/goimports@latest)"
 
 deps:
 	go mod download
 	go mod tidy
 
 install:
-	go install $(LDFLAGS) .
+	go install $(LDFLAGS) ./cmd/mysql-cleanup
 
 release:
 	@echo "Creating a new release..."

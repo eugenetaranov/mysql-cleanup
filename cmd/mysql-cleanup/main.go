@@ -9,71 +9,59 @@ import (
 	"strings"
 
 	"github.com/joho/godotenv"
+	"mysql_cleanup/internal/cleanup"
 )
 
 // Version will be set by the linker during build
 var version = "dev"
 
-type Config struct {
-	Host      string
-	User      string
-	Port      string
-	Password  string
-	Config    string
-	DB        string
-	Tables    []string // Changed from Table string to Tables []string
-	AllTables bool
-	Debug     bool
-	Workers   int
-	BatchSize string // Batch size for updates (e.g., "1", "1K", "10K", "100K" - supports K/M/B suffixes)
-	Range     string // ID range specification (e.g., "0:1000", "1000:", ":100K", "100K:1M" - colon required)
-	LogFile   string // Log file path for saving logs
-}
+// Config holds the command line configuration
+type Config = cleanup.Config
 
 // createService creates and wires up all dependencies
-func createService(debug bool, workers int, batchSizeStr string, logFile string) *Service {
+func createService(debug bool, workers int, batchSizeStr string, logFile string) *cleanup.Service {
 	batchSize, _ := parseHumanizedBatchSize(batchSizeStr)
 	// Create concrete implementations
-	dbConnector := &MySQLConnector{}
-	fileReader := &OSFileReader{}
+	dbConnector := &cleanup.MySQLConnector{}
+	fileReader := &cleanup.OSFileReader{}
 
 	// Create logger based on debug and log file options
-	var logger Logger
+	var logger cleanup.Logger
 	if logFile != "" {
 		// Create multi-logger that writes to both console and file
-		consoleLogger := &StdLogger{}
-		fileLogger, err := NewFileLogger(logFile)
+		consoleLogger := &cleanup.StdLogger{}
+		fileLogger, err := cleanup.NewFileLogger(logFile)
 		if err != nil {
 			log.Printf("Failed to create file logger: %v, falling back to console only", err)
 			logger = consoleLogger
 		} else {
-			logger = NewMultiLogger(consoleLogger, fileLogger)
+			logger = cleanup.NewMultiLogger(consoleLogger, fileLogger)
 		}
 	} else {
-		logger = &StdLogger{} // Use simple logger without stack traces
+		logger = &cleanup.StdLogger{} // Use simple logger without stack traces
 	}
 
 	// Create debug-aware logger if debug mode is enabled
 	if debug {
-		logger = &DebugLogger{logger: logger, debug: true}
+		logger = &cleanup.DebugLogger{Logger: logger, DebugMode: true}
 	}
 
-	s3Handler := NewS3Handler(logger)
-	configParser := NewYAMLConfigParser(fileReader, s3Handler, logger)
-	fakeGenerator := NewGofakeitGenerator() // Use constructor instead of &GofakeitGenerator{}
-	schemaAwareGenerator := NewSchemaAwareGofakeitGenerator(logger)
-	dataCleaner := NewDataCleanupService(dbConnector, configParser, fakeGenerator, schemaAwareGenerator, logger, workers, batchSize)
-	tableFetcher := NewMySQLTableFetcher(dbConnector, logger)
+	s3Handler := cleanup.NewS3Handler(logger)
+	configParser := cleanup.NewYAMLConfigParser(fileReader, s3Handler, logger)
+	fakeGenerator := cleanup.NewGofakeitGenerator() // Use constructor instead of &GofakeitGenerator{}
+	schemaAwareGenerator := cleanup.NewSchemaAwareGofakeitGenerator(logger)
+	dataCleaner := cleanup.NewDataCleanupService(dbConnector, configParser, fakeGenerator, schemaAwareGenerator, logger, workers, batchSize)
+	tableFetcher := cleanup.NewMySQLTableFetcher(dbConnector, logger)
 
 	// Create and return the service
-	return &Service{
-		dbConnector:   dbConnector,
-		configParser:  configParser,
-		dataCleaner:   dataCleaner,
-		fakeGenerator: fakeGenerator,
-		fileReader:    fileReader,
-		logger:        logger,
-		tableFetcher:  tableFetcher,
+	return &cleanup.Service{
+		DBConnector:   dbConnector,
+		ConfigParser:  configParser,
+		DataCleaner:   dataCleaner,
+		FakeGenerator: fakeGenerator,
+		FileReader:    fileReader,
+		Logger:        logger,
+		TableFetcher:  tableFetcher,
 	}
 }
 
@@ -88,7 +76,7 @@ func main() {
 	log.Println("Starting MySQL Cleanup CLI...")
 
 	// Define flags
-	var config Config
+	var config cleanup.Config
 
 	flag.StringVar(&config.Host, "host", getEnvWithDefault("HOST", "localhost"), "Database host")
 	flag.StringVar(&config.User, "user", getEnvWithDefault("USER", ""), "Database user")
@@ -127,92 +115,92 @@ func main() {
 
 	// Create service with all dependencies
 	service := createService(config.Debug, config.Workers, config.BatchSize, config.LogFile)
-	service.logger.Debug("Service created successfully")
+	service.Logger.Debug("Service created successfully")
 
 	// Log command line options (with password masked)
-	service.logger.Info("Command line options:")
-	service.logger.Info(fmt.Sprintf("  Host: %s", config.Host))
-	service.logger.Info(fmt.Sprintf("  User: %s", config.User))
-	service.logger.Info(fmt.Sprintf("  Port: %s", config.Port))
-	service.logger.Info(fmt.Sprintf("  Password: %s", maskPassword(config.Password)))
-	service.logger.Info(fmt.Sprintf("  Database: %s", config.DB))
+	service.Logger.Info("Command line options:")
+	service.Logger.Info(fmt.Sprintf("  Host: %s", config.Host))
+	service.Logger.Info(fmt.Sprintf("  User: %s", config.User))
+	service.Logger.Info(fmt.Sprintf("  Port: %s", config.Port))
+	service.Logger.Info(fmt.Sprintf("  Password: %s", maskPassword(config.Password)))
+	service.Logger.Info(fmt.Sprintf("  Database: %s", config.DB))
 	if config.AllTables {
-		service.logger.Info("  Mode: All tables")
+		service.Logger.Info("  Mode: All tables")
 	} else {
-		service.logger.Info(fmt.Sprintf("  Tables: %v", config.Tables))
+		service.Logger.Info(fmt.Sprintf("  Tables: %v", config.Tables))
 	}
-	service.logger.Info(fmt.Sprintf("  Workers: %d", config.Workers))
-	service.logger.Info(fmt.Sprintf("  Batch size: %s", config.BatchSize))
-	service.logger.Info(fmt.Sprintf("  Range: %s", config.Range))
-	service.logger.Info(fmt.Sprintf("  Config file: %s", config.Config))
-	service.logger.Info(fmt.Sprintf("  Log file: %s", config.LogFile))
-	service.logger.Info(fmt.Sprintf("  Debug mode: %t", config.Debug))
+	service.Logger.Info(fmt.Sprintf("  Workers: %d", config.Workers))
+	service.Logger.Info(fmt.Sprintf("  Batch size: %s", config.BatchSize))
+	service.Logger.Info(fmt.Sprintf("  Range: %s", config.Range))
+	service.Logger.Info(fmt.Sprintf("  Config file: %s", config.Config))
+	service.Logger.Info(fmt.Sprintf("  Log file: %s", config.LogFile))
+	service.Logger.Info(fmt.Sprintf("  Debug mode: %t", config.Debug))
 
 	// Output the provided arguments (debug mode)
-	service.logger.Debug("MySQL Cleanup CLI")
-	service.logger.Debug("==================")
-	service.logger.Debug(fmt.Sprintf("Configuration - host: %s, user: %s, port: %s, password: %s, config: %s, database: %s, range: %s",
+	service.Logger.Debug("MySQL Cleanup CLI")
+	service.Logger.Debug("==================")
+	service.Logger.Debug(fmt.Sprintf("Configuration - host: %s, user: %s, port: %s, password: %s, config: %s, database: %s, range: %s",
 		config.Host, config.User, config.Port, maskPassword(config.Password), config.Config, config.DB, config.Range))
 	if config.AllTables {
-		service.logger.Debug("Mode: All tables")
+		service.Logger.Debug("Mode: All tables")
 	} else {
-		service.logger.Debug(fmt.Sprintf("Mode: Multiple tables - tables: %v", config.Tables))
+		service.Logger.Debug(fmt.Sprintf("Mode: Multiple tables - tables: %v", config.Tables))
 	}
 
 	// Parse and display YAML configuration if provided
 	if config.Config != "" {
-		service.logger.Debug(fmt.Sprintf("Parsing YAML configuration - config_path: %s", config.Config))
-		service.logger.Debug("YAML Configuration:")
-		service.logger.Debug("===================")
-		if err := service.configParser.ParseAndDisplayConfigFiltered(config.Config, config); err != nil {
-			service.logger.Error(fmt.Sprintf("Error parsing config file - error: %s", err))
+		service.Logger.Debug(fmt.Sprintf("Parsing YAML configuration - config_path: %s", config.Config))
+		service.Logger.Debug("YAML Configuration:")
+		service.Logger.Debug("===================")
+		if err := service.ConfigParser.ParseAndDisplayConfigFiltered(config.Config, config); err != nil {
+			service.Logger.Error(fmt.Sprintf("Error parsing config file - error: %s", err))
 		}
 
 		// Validate arguments
-		service.logger.Debug("Validating arguments")
+		service.Logger.Debug("Validating arguments")
 		if config.DB == "" {
-			service.logger.Error("Error: -db argument is required")
+			service.Logger.Error("Error: -db argument is required")
 			os.Exit(1)
 		}
 
 		if config.User == "" {
-			service.logger.Error("Error: -user argument is required")
+			service.Logger.Error("Error: -user argument is required")
 			os.Exit(1)
 		}
 
 		if !config.AllTables && len(config.Tables) == 0 {
-			service.logger.Error("Error: Either -table (can be specified multiple times) or -all-tables argument is required")
+			service.Logger.Error("Error: Either -table (can be specified multiple times) or -all-tables argument is required")
 			os.Exit(1)
 		}
-		service.logger.Debug("Arguments validated successfully")
+		service.Logger.Debug("Arguments validated successfully")
 
 		// Perform the actual data cleanup
-		service.logger.Debug("Starting data cleanup process")
-		service.logger.Debug("Performing Data Cleanup:")
-		service.logger.Debug("========================")
-		stats, err := service.dataCleaner.CleanupData(config)
+		service.Logger.Debug("Starting data cleanup process")
+		service.Logger.Debug("Performing Data Cleanup:")
+		service.Logger.Debug("========================")
+		stats, err := service.DataCleaner.CleanupData(config)
 		if err != nil {
 			// Provide specific error messages based on failure type
 			if strings.Contains(err.Error(), "connection timeout") || strings.Contains(err.Error(), "i/o timeout") {
-				service.logger.Error("Database connection timeout - server is not responding")
+				service.Logger.Error("Database connection timeout - server is not responding")
 			} else if strings.Contains(err.Error(), "Access denied") || strings.Contains(err.Error(), "authentication") {
-				service.logger.Error("Database authentication failed - check username/password")
+				service.Logger.Error("Database authentication failed - check username/password")
 			} else if strings.Contains(err.Error(), "connection refused") {
-				service.logger.Error("Database connection refused - check if server is running")
+				service.Logger.Error("Database connection refused - check if server is running")
 			} else if strings.Contains(err.Error(), "no such host") || strings.Contains(err.Error(), "unknown host") {
-				service.logger.Error("Database host not found - check hostname/IP address")
+				service.Logger.Error("Database host not found - check hostname/IP address")
 			} else if strings.Contains(err.Error(), "Unknown database") {
-				service.logger.Error("Database not found - check database name")
+				service.Logger.Error("Database not found - check database name")
 			} else if strings.Contains(err.Error(), "no primary key") {
-				service.logger.Error("Table structure issue - the specified table does not have a primary key defined")
+				service.Logger.Error("Table structure issue - the specified table does not have a primary key defined")
 			} else {
-				service.logger.Error(fmt.Sprintf("Data cleanup failed: %s", err))
+				service.Logger.Error(fmt.Sprintf("Data cleanup failed: %s", err))
 			}
 			// Exit with non-zero code on any error
 			os.Exit(1)
 		} else {
-			service.logger.Info(fmt.Sprintf("Data cleanup completed successfully! total_rows_processed: %d, tables_processed: %d, total_duration: %s",
-				stats.TotalRowsProcessed, stats.TablesProcessed, FormatDuration(stats.TotalDuration)))
+			service.Logger.Info(fmt.Sprintf("Data cleanup completed successfully! total_rows_processed: %d, tables_processed: %d, total_duration: %s",
+				stats.TotalRowsProcessed, stats.TablesProcessed, cleanup.FormatDuration(stats.TotalDuration)))
 		}
 	}
 

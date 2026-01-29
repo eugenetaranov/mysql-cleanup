@@ -1,4 +1,4 @@
-package main
+package cleanup
 
 import (
 	"context"
@@ -1445,10 +1445,10 @@ func (d *DataCleanupService) updateSingleRow(db *sql.DB, databaseName, tableName
 func (d *DataCleanupService) columnExists(db *sql.DB, databaseName, tableName, columnName string) (bool, error) {
 	// Use INFORMATION_SCHEMA to check column existence with parameterized query
 	query := `
-		SELECT COUNT(*) 
-		FROM INFORMATION_SCHEMA.COLUMNS 
-		WHERE TABLE_SCHEMA = ? 
-		AND TABLE_NAME = ? 
+		SELECT COUNT(*)
+		FROM INFORMATION_SCHEMA.COLUMNS
+		WHERE TABLE_SCHEMA = ?
+		AND TABLE_NAME = ?
 		AND COLUMN_NAME = ?
 	`
 
@@ -1541,14 +1541,14 @@ func NewSchemaAwareGofakeitGenerator(logger Logger) *SchemaAwareGofakeitGenerato
 
 func (g *SchemaAwareGofakeitGenerator) GetColumnInfo(databaseName, tableName, columnName string, db *sql.DB) (*ColumnInfo, error) {
 	query := `
-		SELECT 
+		SELECT
 			DATA_TYPE,
 			CHARACTER_MAXIMUM_LENGTH,
 			IS_NULLABLE,
 			COLUMN_DEFAULT
-		FROM INFORMATION_SCHEMA.COLUMNS 
-		WHERE TABLE_SCHEMA = ? 
-		AND TABLE_NAME = ? 
+		FROM INFORMATION_SCHEMA.COLUMNS
+		WHERE TABLE_SCHEMA = ?
+		AND TABLE_NAME = ?
 		AND COLUMN_NAME = ?
 	`
 
@@ -1592,7 +1592,7 @@ func (g *SchemaAwareGofakeitGenerator) GenerateFakeValue(fakerType string, info 
 	}
 
 	// Truncate the value if it's a string and has a max length constraint
-	if strValue, ok := value.(string); ok && info.MaxLength != nil {
+	if strValue, ok := value.(string); ok && info != nil && info.MaxLength != nil {
 		if len(strValue) > *info.MaxLength {
 			g.logger.Debug(fmt.Sprintf("Truncating string value - original_length: %d, max_length: %d", len(strValue), *info.MaxLength))
 			value = strValue[:*info.MaxLength]
@@ -2019,36 +2019,36 @@ func (s *StdLogger) With(fields ...Field) Logger {
 
 // DebugLogger wraps a logger and only logs debug messages when debug mode is enabled
 type DebugLogger struct {
-	logger Logger
-	debug  bool
+	Logger    Logger
+	DebugMode bool
 }
 
 func (d *DebugLogger) Printf(format string, args ...interface{}) {
-	d.logger.Printf(format, args...)
+	d.Logger.Printf(format, args...)
 }
 
 func (d *DebugLogger) Println(args ...interface{}) {
-	d.logger.Println(args...)
+	d.Logger.Println(args...)
 }
 
 func (d *DebugLogger) Debug(msg string, fields ...Field) {
-	d.logger.Debug(msg, fields...)
+	d.Logger.Debug(msg, fields...)
 }
 
 func (d *DebugLogger) Info(msg string, fields ...Field) {
-	d.logger.Info(msg, fields...)
+	d.Logger.Info(msg, fields...)
 }
 
 func (d *DebugLogger) Warn(msg string, fields ...Field) {
-	d.logger.Warn(msg, fields...)
+	d.Logger.Warn(msg, fields...)
 }
 
 func (d *DebugLogger) Error(msg string, fields ...Field) {
-	d.logger.Error(msg, fields...)
+	d.Logger.Error(msg, fields...)
 }
 
 func (d *DebugLogger) With(fields ...Field) Logger {
-	return &DebugLogger{logger: d.logger.With(fields...), debug: d.debug}
+	return &DebugLogger{Logger: d.Logger.With(fields...), DebugMode: d.DebugMode}
 }
 
 // MySQLTableFetcher implements TableDataFetcher

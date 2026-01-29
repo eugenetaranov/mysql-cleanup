@@ -1,4 +1,4 @@
-package main
+package cleanup
 
 import (
 	"database/sql"
@@ -113,11 +113,11 @@ type S3Handler interface {
 
 // Service struct that holds all dependencies
 type Service struct {
-	dbConnector   DatabaseConnector
-	configParser  ConfigParser
-	dataCleaner   DataCleaner
-	fakeGenerator FakeDataGenerator
-	fileReader    FileReader
-	logger        Logger
-	tableFetcher  TableDataFetcher
+	DBConnector   DatabaseConnector
+	ConfigParser  ConfigParser
+	DataCleaner   DataCleaner
+	FakeGenerator FakeDataGenerator
+	FileReader    FileReader
+	Logger        Logger
+	TableFetcher  TableDataFetcher
 }
