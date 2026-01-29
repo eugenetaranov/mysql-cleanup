@@ -102,92 +102,6 @@ func setupTestMySQLContainer(t *testing.T) (container tc.Container, db *sql.DB, 
 	return container, db2, cleanup
 }
 
-// TestTableWithoutPrimaryKeyOffsetProcessing tests that tables without primary keys
-// can be processed using offset-based pagination
-func TestTableWithoutPrimaryKeyOffsetProcessing(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping test in short mode")
-	}
-
-	container, db, cleanup := setupTestMySQLContainer(t)
-	defer container.Terminate(context.Background())
-	defer cleanup()
-
-	// Create a table without primary key (junction table)
-	if err := createTableWithoutPrimaryKey(db, "email_recipients"); err != nil {
-		t.Fatalf("Failed to create table without primary key: %v", err)
-	}
-
-	// Insert test data
-	if err := insertTestDataForNonPKTable(db, "email_recipients"); err != nil {
-		t.Fatalf("Failed to insert test data: %v", err)
-	}
-
-	// Verify initial data
-	initialCount, err := getRowCount(db, "acme_corp", "email_recipients")
-	if err != nil {
-		t.Fatalf("Failed to get initial row count: %v", err)
-	}
-	if initialCount == 0 {
-		t.Fatal("No test data inserted")
-	}
-
-	// Create custom config parser for the non-PK table
-	configParser := &CustomTestConfigParser{
-		tableName: "email_recipients",
-		columns: map[string]string{
-			"recipient_email": "random_email",
-			"recipient_name":  "random_name",
-		},
-	}
-
-	// Create test config
-	config := Config{
-		DB:     "acme_corp",
-		Tables: []string{"email_recipients"},
-		Config: "tests/config.yaml", // This won't be used due to custom parser
-	}
-
-	// Create cleanup service
-	cleanupService := NewDataCleanupService(
-		&TestContainerConnector{db: db},
-		configParser,
-		NewGofakeitGenerator(),
-		NewSchemaAwareGofakeitGenerator(&StdLogger{}),
-		&StdLogger{},
-		2,   // workers
-		100, // batch size
-	)
-
-	// Process the table
-	stats, err := cleanupService.CleanupData(config)
-	if err != nil {
-		t.Fatalf("Failed to process table without primary key: %v", err)
-	}
-
-	// Verify that processing completed
-	if stats == nil {
-		t.Fatal("No stats returned")
-	}
-
-	// Verify that some rows were processed
-	if stats.TotalRowsProcessed == 0 {
-		t.Error("No rows were processed")
-	}
-
-	// Verify that the data was actually changed
-	changedCount, err := getChangedRowCount(db, "acme_corp", "email_recipients", "recipient_email")
-	if err != nil {
-		t.Fatalf("Failed to get changed row count: %v", err)
-	}
-
-	if changedCount == 0 {
-		t.Error("No rows were actually updated")
-	}
-
-	t.Logf("Successfully processed %d rows using offset-based processing", stats.TotalRowsProcessed)
-}
-
 // TestTableWithoutPrimaryKeyParallelProcessing tests that offset-based processing
 // works correctly with multiple workers
 func TestTableWithoutPrimaryKeyParallelProcessing(t *testing.T) {
@@ -312,9 +226,9 @@ func TestTableWithoutPrimaryKeyExcludeClause(t *testing.T) {
 	configParser := &CustomTestConfigParserWithExclude{
 		tableName: "test_exclude_table",
 		columns: map[string]string{
-			"email": "random_email",
+			"recipient_email": "random_email",
 		},
-		excludeClause: "email LIKE '%@company.com'",
+		excludeClause: "recipient_email LIKE '%@company.com'",
 	}
 
 	// Create test config
@@ -364,7 +278,189 @@ func TestTableWithoutPrimaryKeyExcludeClause(t *testing.T) {
 	t.Logf("Successfully processed %d rows while excluding %d rows", stats.TotalRowsProcessed, excludedCount)
 }
 
+// TestTableWithoutPrimaryKeyEmptyTable tests that offset-based processing handles
+// empty tables gracefully without errors
+func TestTableWithoutPrimaryKeyEmptyTable(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
+	container, db, cleanup := setupTestMySQLContainer(t)
+	defer container.Terminate(context.Background())
+	defer cleanup()
+
+	// Create a table without primary key but don't insert any data
+	if err := createTableWithoutPrimaryKey(db, "empty_nopk_table"); err != nil {
+		t.Fatalf("Failed to create empty table without primary key: %v", err)
+	}
+
+	// Verify table is empty
+	initialCount, err := getRowCount(db, "acme_corp", "empty_nopk_table")
+	if err != nil {
+		t.Fatalf("Failed to get initial row count: %v", err)
+	}
+	if initialCount != 0 {
+		t.Fatalf("Expected 0 rows, got %d", initialCount)
+	}
+
+	// Create custom config parser for the non-PK table
+	configParser := &CustomTestConfigParser{
+		tableName: "empty_nopk_table",
+		columns: map[string]string{
+			"recipient_email": "random_email",
+			"recipient_name":  "random_name",
+		},
+	}
+
+	// Create test config
+	config := Config{
+		DB:     "acme_corp",
+		Tables: []string{"empty_nopk_table"},
+		Config: "tests/config.yaml",
+	}
+
+	// Create cleanup service
+	cleanupService := NewDataCleanupService(
+		&TestContainerConnector{db: db},
+		configParser,
+		NewGofakeitGenerator(),
+		NewSchemaAwareGofakeitGenerator(&StdLogger{}),
+		&StdLogger{},
+		2,   // workers
+		100, // batch size
+	)
+
+	// Process the empty table - should not error
+	stats, err := cleanupService.CleanupData(config)
+	if err != nil {
+		t.Fatalf("Failed to process empty table without primary key: %v", err)
+	}
+
+	// Verify that processing completed with 0 rows
+	if stats == nil {
+		t.Fatal("No stats returned")
+	}
+
+	if stats.TotalRowsProcessed != 0 {
+		t.Errorf("Expected 0 rows processed for empty table, got %d", stats.TotalRowsProcessed)
+	}
+
+	t.Log("Successfully handled empty table without primary key")
+}
+
+// TestTableWithoutPrimaryKeyBatchLargerThanRows tests that offset-based processing
+// works correctly when batch size is larger than the total number of rows
+func TestTableWithoutPrimaryKeyBatchLargerThanRows(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
+	container, db, cleanup := setupTestMySQLContainer(t)
+	defer container.Terminate(context.Background())
+	defer cleanup()
+
+	// Create a table without primary key with small number of rows
+	if err := createSmallTableWithoutPrimaryKey(db, "small_nopk_table"); err != nil {
+		t.Fatalf("Failed to create small table without primary key: %v", err)
+	}
+
+	// Verify initial data (should be 10 rows)
+	initialCount, err := getRowCount(db, "acme_corp", "small_nopk_table")
+	if err != nil {
+		t.Fatalf("Failed to get initial row count: %v", err)
+	}
+	if initialCount != 10 {
+		t.Fatalf("Expected 10 rows, got %d", initialCount)
+	}
+
+	// Create custom config parser for the non-PK table
+	configParser := &CustomTestConfigParser{
+		tableName: "small_nopk_table",
+		columns: map[string]string{
+			"recipient_email": "random_email",
+			"recipient_name":  "random_name",
+		},
+	}
+
+	// Create test config
+	config := Config{
+		DB:     "acme_corp",
+		Tables: []string{"small_nopk_table"},
+		Config: "tests/config.yaml",
+	}
+
+	// Create cleanup service with batch size (100) larger than row count (10)
+	cleanupService := NewDataCleanupService(
+		&TestContainerConnector{db: db},
+		configParser,
+		NewGofakeitGenerator(),
+		NewSchemaAwareGofakeitGenerator(&StdLogger{}),
+		&StdLogger{},
+		2,   // workers
+		100, // batch size larger than row count
+	)
+
+	// Process the table
+	stats, err := cleanupService.CleanupData(config)
+	if err != nil {
+		t.Fatalf("Failed to process small table without primary key: %v", err)
+	}
+
+	// Verify that processing completed
+	if stats == nil {
+		t.Fatal("No stats returned")
+	}
+
+	// Verify that all rows were processed
+	if stats.TotalRowsProcessed != initialCount {
+		t.Errorf("Expected %d rows processed, got %d", initialCount, stats.TotalRowsProcessed)
+	}
+
+	// Verify that the data was actually changed
+	changedCount, err := getChangedRowCount(db, "acme_corp", "small_nopk_table", "recipient_email")
+	if err != nil {
+		t.Fatalf("Failed to get changed row count: %v", err)
+	}
+
+	if changedCount == 0 {
+		t.Error("No rows were actually updated")
+	}
+
+	t.Logf("Successfully processed %d rows with batch size larger than row count", stats.TotalRowsProcessed)
+}
+
 // Helper functions for non-PK table tests
+
+func createSmallTableWithoutPrimaryKey(db *sql.DB, tableName string) error {
+	query := fmt.Sprintf(`
+		CREATE TABLE %s (
+			id INT,
+			email_history_id BIGINT,
+			recipient_email VARCHAR(255),
+			recipient_name VARCHAR(255),
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			KEY idx_email_history_id (email_history_id),
+			KEY idx_recipient_email (recipient_email)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+	`, tableName)
+	_, err := db.Exec(query)
+	if err != nil {
+		return err
+	}
+
+	// Insert 10 rows (fewer than the typical batch size)
+	for i := 1; i <= 10; i++ {
+		insertQuery := fmt.Sprintf(`
+			INSERT INTO %s (id, email_history_id, recipient_email, recipient_name)
+			VALUES (?, ?, ?, ?)
+		`, tableName)
+		_, err := db.Exec(insertQuery, i, i*10, fmt.Sprintf("user%d@example.com", i), fmt.Sprintf("User %d", i))
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 func createTableWithoutPrimaryKey(db *sql.DB, tableName string) error {
 	query := fmt.Sprintf(`
@@ -464,9 +560,9 @@ func getChangedRowCount(db *sql.DB, database, table, column string) (int, error)
 
 func getExcludedRowCount(db *sql.DB, database, table string) (int, error) {
 	query := fmt.Sprintf(`
-		SELECT COUNT(*) 
-		FROM %s.%s 
-		WHERE email LIKE '%%@company.com'
+		SELECT COUNT(*)
+		FROM %s.%s
+		WHERE recipient_email LIKE '%%@company.com'
 	`, database, table)
 
 	var count int
@@ -476,10 +572,10 @@ func getExcludedRowCount(db *sql.DB, database, table string) (int, error) {
 
 func getUnchangedExcludedRowCount(db *sql.DB, database, table string) (int, error) {
 	query := fmt.Sprintf(`
-		SELECT COUNT(*) 
-		FROM %s.%s 
-		WHERE email LIKE '%%@company.com' 
-		AND email NOT LIKE 'random%%'
+		SELECT COUNT(*)
+		FROM %s.%s
+		WHERE recipient_email LIKE '%%@company.com'
+		AND recipient_email NOT LIKE 'random%%'
 	`, database, table)
 
 	var count int
@@ -1545,7 +1641,17 @@ func createSmallTableForEdgeCase(db *sql.DB) error {
 		id INT PRIMARY KEY AUTO_INCREMENT,
 		name VARCHAR(100)
 	)`)
-	return err
+	if err != nil {
+		return err
+	}
+	// Insert 5 rows (fewer than the batch size of 20)
+	for i := 1; i <= 5; i++ {
+		_, err := db.Exec(`INSERT INTO acme_corp.edge_case_small_table (name) VALUES (?)`, fmt.Sprintf("User %d", i))
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // TestEdgeCaseBatchSizeOne validates that the tool works correctly with the minimum
@@ -1616,7 +1722,17 @@ func createSmallTableForBatchSizeOne(db *sql.DB) error {
 		id INT PRIMARY KEY AUTO_INCREMENT,
 		name VARCHAR(100)
 	)`)
-	return err
+	if err != nil {
+		return err
+	}
+	// Insert 10 rows to test batch size of 1
+	for i := 1; i <= 10; i++ {
+		_, err := db.Exec(`INSERT INTO acme_corp.edge_case_batch_size_one (name) VALUES (?)`, fmt.Sprintf("User %d", i))
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // TestNonIdPrimaryKey verifies that the data cleanup tool correctly handles tables

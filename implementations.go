@@ -697,11 +697,10 @@ func (d *DataCleanupService) workerOffsetWithContext(ctx context.Context, worker
 				ProcessedCount: processed,
 				ErrorCount:     errors,
 				Duration:       time.Since(time.Now()), // Will be set properly in processBatchOffset
-				Errors:         []error{err},
 				SampleData:     sampleData,
 			}
 			if err != nil {
-				result.Errors = append(result.Errors, err)
+				result.Errors = []error{err}
 			}
 			select {
 			case resultChan <- result:
@@ -714,7 +713,47 @@ func (d *DataCleanupService) workerOffsetWithContext(ctx context.Context, worker
 	}
 }
 
-// processBatchOffset processes a single batch using LIMIT/OFFSET
+// getTableColumns retrieves all column names for a table
+func (d *DataCleanupService) getTableColumns(db *sql.DB, databaseName, tableName string) ([]string, error) {
+	query := `
+		SELECT COLUMN_NAME
+		FROM INFORMATION_SCHEMA.COLUMNS
+		WHERE TABLE_SCHEMA = ?
+		  AND TABLE_NAME = ?
+		ORDER BY ORDINAL_POSITION
+	`
+	rows, err := db.Query(query, databaseName, tableName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get table columns: %w", err)
+	}
+	defer rows.Close()
+
+	var columns []string
+	for rows.Next() {
+		var col string
+		if err := rows.Scan(&col); err != nil {
+			return nil, fmt.Errorf("failed to scan column name: %w", err)
+		}
+		columns = append(columns, col)
+	}
+
+	if len(columns) == 0 {
+		return nil, fmt.Errorf("no columns found for table %s.%s", databaseName, tableName)
+	}
+
+	return columns, nil
+}
+
+// buildJoinCondition generates a join condition like "t.col1 = batch.col1 AND t.col2 = batch.col2"
+func buildJoinCondition(alias1, alias2 string, columns []string) string {
+	conditions := make([]string, len(columns))
+	for i, col := range columns {
+		conditions[i] = fmt.Sprintf("%s.`%s` = %s.`%s`", alias1, col, alias2, col)
+	}
+	return strings.Join(conditions, " AND ")
+}
+
+// processBatchOffset processes a single batch using a subquery-based UPDATE (for tables without PK)
 func (d *DataCleanupService) processBatchOffset(db *sql.DB, generator *SchemaAwareGofakeitGenerator, job BatchJob) (int, int, []SampleRowData, error) {
 	startTime := time.Now()
 
@@ -737,13 +776,19 @@ func (d *DataCleanupService) processBatchOffset(db *sql.DB, generator *SchemaAwa
 	offset := startRow - 1
 	limit := endRow - startRow + 1
 
-	// Build WHERE clause
-	whereClause := ""
-	if job.TableConfig.ExcludeClause != "" {
-		whereClause = fmt.Sprintf("WHERE NOT (%s)", job.TableConfig.ExcludeClause)
+	// Get all table columns for the self-join
+	allColumns, err := d.getTableColumns(db, job.DatabaseName, job.TableName)
+	if err != nil {
+		return 0, 0, nil, fmt.Errorf("failed to get table columns: %w", err)
 	}
 
-	// Build UPDATE query with LIMIT/OFFSET
+	// Build WHERE clause for the subquery
+	subqueryWhereClause := ""
+	if job.TableConfig.ExcludeClause != "" {
+		subqueryWhereClause = fmt.Sprintf("WHERE NOT (%s)", job.TableConfig.ExcludeClause)
+	}
+
+	// Build SET clause with updates
 	updates := make([]string, 0)
 	args := make([]interface{}, 0)
 
@@ -787,7 +832,7 @@ func (d *DataCleanupService) processBatchOffset(db *sql.DB, generator *SchemaAwa
 			continue
 		}
 
-		updates = append(updates, fmt.Sprintf("`%s` = ?", column))
+		updates = append(updates, fmt.Sprintf("t.`%s` = ?", column))
 		args = append(args, fakeValue)
 	}
 
@@ -795,9 +840,18 @@ func (d *DataCleanupService) processBatchOffset(db *sql.DB, generator *SchemaAwa
 		return 0, 0, nil, nil
 	}
 
-	// Build the UPDATE query
-	query := fmt.Sprintf("UPDATE `%s`.`%s` SET %s %s LIMIT %d OFFSET %d",
-		job.DatabaseName, job.TableName, strings.Join(updates, ", "), whereClause, limit, offset)
+	// Build the UPDATE query using a self-join with subquery
+	// MySQL does not support OFFSET in UPDATE, so we use:
+	// UPDATE table t
+	// INNER JOIN (SELECT * FROM table [WHERE ...] ORDER BY first_col LIMIT x OFFSET y) batch
+	// ON t.col1 = batch.col1 AND t.col2 = batch.col2 ...
+	// SET t.column = ?
+	query := fmt.Sprintf(
+		"UPDATE `%s`.`%s` t INNER JOIN (SELECT * FROM `%s`.`%s` %s ORDER BY `%s` LIMIT %d OFFSET %d) batch ON %s SET %s",
+		job.DatabaseName, job.TableName,
+		job.DatabaseName, job.TableName, subqueryWhereClause, allColumns[0], limit, offset,
+		buildJoinCondition("t", "batch", allColumns),
+		strings.Join(updates, ", "))
 
 	d.logger.Debug(fmt.Sprintf("Executing offset-based update - table: %s, batch: %d, offset: %d, limit: %d, query: %s",
 		job.TableName, job.BatchNumber, offset, limit, query))
