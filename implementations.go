@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"math/rand"
@@ -58,10 +59,18 @@ func (m *MySQLConnector) Connect(config Config) (*sql.DB, error) {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
 
+	// Scale connection pool with workers
+	maxConns := config.Workers + 5 // Buffer of 5 connections
+	if maxConns < 20 {
+		maxConns = 20 // Minimum pool size
+	}
+
 	// Set connection pool settings with longer timeouts for large datasets
 	db.SetConnMaxLifetime(10 * time.Minute)
-	db.SetMaxOpenConns(20)
-	db.SetMaxIdleConns(10)
+	db.SetMaxOpenConns(maxConns)
+	db.SetMaxIdleConns(maxConns / 2)
+
+	log.Printf("Connection pool configured - max_open: %d, max_idle: %d, workers: %d", maxConns, maxConns/2, config.Workers)
 
 	return db, nil
 }
@@ -211,16 +220,17 @@ type BatchProcessor struct {
 // BatchJob represents a batch of rows to be updated
 // Add PKCols and PKValues for supporting composite PKs
 type BatchJob struct {
-	DatabaseName string
-	TableName    string
-	PKCols       []string
-	PKValues     [][]interface{} // Each row's PK values
-	TableConfig  TableUpdateConfig
-	ValidColumns map[string]string // Pre-validated columns: column -> fakerType
-	BatchNumber  int               // Batch number (1, 2, 3, etc.)
-	TotalBatches int               // Total number of batches for percentage calculation
-	WorkerID     int               // Worker ID that will process this batch
-	RowRange     string            // Row range like "1-3" or "4-6"
+	DatabaseName   string
+	TableName      string
+	PKCols         []string
+	PKValues       [][]interface{} // Each row's PK values
+	TableConfig    TableUpdateConfig
+	ValidColumns   map[string]string // Pre-validated columns: column -> fakerType
+	OrderedColumns []string          // Pre-sorted column names for consistent ordering
+	BatchNumber    int               // Batch number (1, 2, 3, etc.)
+	TotalBatches   int               // Total number of batches for percentage calculation
+	WorkerID       int               // Worker ID that will process this batch
+	RowRange       string            // Row range like "1-3" or "4-6"
 }
 
 // SampleRowData represents sample data for logging
@@ -863,6 +873,13 @@ func (d *DataCleanupService) processBatchesInParallelPK(db *sql.DB, databaseName
 	// Reset worker batch times for fresh ETA calculation
 	d.resetWorkerBatchTimes()
 
+	// Pre-compute ordered columns once for all batches
+	orderedColumns := make([]string, 0, len(validColumns))
+	for col := range validColumns {
+		orderedColumns = append(orderedColumns, col)
+	}
+	sort.Strings(orderedColumns)
+
 	batches := d.createBatchesPK(pkValues, d.batchProcessor.batchSize)
 	jobChan := make(chan BatchJob, len(batches))
 	resultChan := make(chan BatchResult, len(batches))
@@ -900,16 +917,17 @@ func (d *DataCleanupService) processBatchesInParallelPK(db *sql.DB, databaseName
 				}
 				select {
 				case jobChan <- BatchJob{
-					DatabaseName: databaseName,
-					TableName:    tableName,
-					PKCols:       pkCols,
-					PKValues:     batch,
-					TableConfig:  tableConfig,
-					ValidColumns: validColumns,
-					BatchNumber:  batchIndex + 1,
-					TotalBatches: len(batches),
-					WorkerID:     -1,
-					RowRange:     rowRange,
+					DatabaseName:   databaseName,
+					TableName:      tableName,
+					PKCols:         pkCols,
+					PKValues:       batch,
+					TableConfig:    tableConfig,
+					ValidColumns:   validColumns,
+					OrderedColumns: orderedColumns,
+					BatchNumber:    batchIndex + 1,
+					TotalBatches:   len(batches),
+					WorkerID:       -1,
+					RowRange:       rowRange,
 				}:
 				case <-ctx.Done():
 					return
@@ -1081,13 +1099,19 @@ func (d *DataCleanupService) processBatchPK(db *sql.DB, generator *SchemaAwareGo
 
 	rowUpdates := make([]RowUpdate, 0, len(job.PKValues))
 
+	// Copy column info to local map before the row loop - single lock acquisition
+	d.cacheMutex.RLock()
+	localColumnInfo := make(map[string]*ColumnInfo, len(job.ValidColumns))
+	for col := range job.ValidColumns {
+		localColumnInfo[col] = d.columnInfoCache[job.TableName][col]
+	}
+	d.cacheMutex.RUnlock()
+
 	for _, pkVals := range job.PKValues {
-		columnUpdates := make(map[string]interface{})
+		columnUpdates := make(map[string]interface{}, len(job.ValidColumns))
 		for column, fakerType := range job.ValidColumns {
-			// Get column info from cache
-			d.cacheMutex.RLock()
-			info := d.columnInfoCache[job.TableName][column]
-			d.cacheMutex.RUnlock()
+			// Get column info from local cache - no lock needed
+			info := localColumnInfo[column]
 
 			fakeValue, err := generator.GenerateFakeValue(fakerType, info)
 			if err != nil {
@@ -1111,12 +1135,8 @@ func (d *DataCleanupService) processBatchPK(db *sql.DB, generator *SchemaAwareGo
 	// Build UPDATE query similar to Python implementation
 	// Format: UPDATE table SET col1=?, col2=? WHERE pk=?
 
-	// Create ordered list of columns to ensure SET clause and arguments match
-	orderedColumns := make([]string, 0, len(job.ValidColumns))
-	for column := range job.ValidColumns {
-		orderedColumns = append(orderedColumns, column)
-	}
-	sort.Strings(orderedColumns) // Sort for consistent order
+	// Use pre-computed ordered columns from job (already sorted)
+	orderedColumns := job.OrderedColumns
 
 	setClauses := make([]string, 0, len(orderedColumns))
 	for _, column := range orderedColumns {
@@ -1222,25 +1242,29 @@ func (d *DataCleanupService) formatSampleData(sampleData []SampleRowData) string
 	// Only show the last sample row
 	sample := sampleData[len(sampleData)-1]
 
-	pkStr := ""
+	// Use strings.Builder for efficient string concatenation
+	var pkBuf strings.Builder
+	first := true
 	for col, val := range sample.PKValues {
-		if pkStr != "" {
-			pkStr += ", "
+		if !first {
+			pkBuf.WriteString(", ")
 		}
-		pkStr += fmt.Sprintf("%s:%v", col, val)
+		first = false
+		fmt.Fprintf(&pkBuf, "%s:%v", col, val)
 	}
 
-	updateStr := ""
+	var updateBuf strings.Builder
+	first = true
 	for col, val := range sample.UpdatedColumns {
-		if updateStr != "" {
-			updateStr += ", "
+		if !first {
+			updateBuf.WriteString(", ")
 		}
+		first = false
 		// Show complete values to verify uniqueness
-		valStr := fmt.Sprintf("%v", val)
-		updateStr += fmt.Sprintf("%s:'%s'", col, valStr)
+		fmt.Fprintf(&updateBuf, "%s:'%v'", col, val)
 	}
 
-	return fmt.Sprintf("[PK:{%s} -> {%s}]", pkStr, updateStr)
+	return fmt.Sprintf("[PK:{%s} -> {%s}]", pkBuf.String(), updateBuf.String())
 }
 
 // recordBatchTime records a batch completion time for a worker
@@ -1431,7 +1455,8 @@ func getTableRowCount(db *sql.DB, databaseName, tableName string, whereClause st
 
 // GofakeitGenerator implements FakeDataGenerator
 type GofakeitGenerator struct {
-	faker *gofakeit.Faker
+	faker        *gofakeit.Faker
+	emailCounter uint64 // Atomic counter for unique email generation
 }
 
 func NewGofakeitGenerator() *GofakeitGenerator {
@@ -1444,16 +1469,19 @@ func NewGofakeitGenerator() *GofakeitGenerator {
 
 // SchemaAwareGofakeitGenerator implements SchemaAwareFakeDataGenerator
 type SchemaAwareGofakeitGenerator struct {
-	logger Logger
-	faker  *gofakeit.Faker
+	logger           Logger
+	faker            *gofakeit.Faker
+	emailCounter     uint64                 // Atomic counter for unique email generation
+	staticValueCache map[string]interface{} // Cache for parsed static values
 }
 
 func NewSchemaAwareGofakeitGenerator(logger Logger) *SchemaAwareGofakeitGenerator {
 	// Use a combination of time and random for more robust seeding
 	seed := time.Now().UnixNano() + rand.Int63()
 	return &SchemaAwareGofakeitGenerator{
-		logger: logger,
-		faker:  gofakeit.New(seed),
+		logger:           logger,
+		faker:            gofakeit.New(seed),
+		staticValueCache: make(map[string]interface{}),
 	}
 }
 
@@ -1524,31 +1552,36 @@ func (g *SchemaAwareGofakeitGenerator) generateBasicFakeValue(fakerType string) 
 
 	// Handle static_value format (e.g., "static_value: 1", "static_value: true", "static_value: hello")
 	if strings.HasPrefix(fakerType, "static_value:") {
+		// Check cache first
+		if cached, ok := g.staticValueCache[fakerType]; ok {
+			return cached, nil
+		}
+
 		staticValue := strings.TrimSpace(strings.TrimPrefix(fakerType, "static_value:"))
+
+		var parsedValue interface{}
 
 		// Try to parse as different types
 		// First, try as integer
 		if num, err := strconv.Atoi(staticValue); err == nil {
-			return num, nil
+			parsedValue = num
+		} else if num, err := strconv.ParseFloat(staticValue, 64); err == nil {
+			// Try as float
+			parsedValue = num
+		} else if strings.ToLower(staticValue) == "true" || strings.ToLower(staticValue) == "false" {
+			// Try as boolean (case-insensitive)
+			parsedValue = strings.ToLower(staticValue) == "true"
+		} else if staticValue == "NULL" || staticValue == "null" {
+			// Try as NULL
+			parsedValue = nil
+		} else {
+			// Return as string (default)
+			parsedValue = staticValue
 		}
 
-		// Try as float
-		if num, err := strconv.ParseFloat(staticValue, 64); err == nil {
-			return num, nil
-		}
-
-		// Try as boolean (case-insensitive)
-		if strings.ToLower(staticValue) == "true" || strings.ToLower(staticValue) == "false" {
-			return strings.ToLower(staticValue) == "true", nil
-		}
-
-		// Try as NULL
-		if staticValue == "NULL" || staticValue == "null" {
-			return nil, nil
-		}
-
-		// Return as string (default)
-		return staticValue, nil
+		// Cache and return
+		g.staticValueCache[fakerType] = parsedValue
+		return parsedValue, nil
 	}
 
 	switch fakerType {
@@ -1558,10 +1591,10 @@ func (g *SchemaAwareGofakeitGenerator) generateBasicFakeValue(fakerType string) 
 		parts := strings.Split(baseEmail, "@")
 		if len(parts) == 2 {
 			// Add multiple sources of randomness for uniqueness
-			suffix1 := g.faker.Number(10, 99)             // 2-digit random number
-			suffix2 := g.faker.Number(100, 999)           // 3-digit random number
-			timeComponent := time.Now().UnixNano() % 1000 // Time-based component
-			return fmt.Sprintf("%s%d%d%d@%s", parts[0], suffix1, suffix2, timeComponent, parts[1]), nil
+			suffix1 := g.faker.Number(10, 99)                      // 2-digit random number
+			suffix2 := g.faker.Number(100, 999)                    // 3-digit random number
+			counter := atomic.AddUint64(&g.emailCounter, 1) % 1000 // Atomic counter instead of time.Now()
+			return fmt.Sprintf("%s%d%d%d@%s", parts[0], suffix1, suffix2, counter, parts[1]), nil
 		}
 		return baseEmail, nil
 	case "random_name":
@@ -1655,10 +1688,10 @@ func (g *GofakeitGenerator) GenerateFakeValue(fakerType string) (interface{}, er
 		parts := strings.Split(baseEmail, "@")
 		if len(parts) == 2 {
 			// Add multiple sources of randomness for uniqueness
-			suffix1 := g.faker.Number(10, 99)             // 2-digit random number
-			suffix2 := g.faker.Number(100, 999)           // 3-digit random number
-			timeComponent := time.Now().UnixNano() % 1000 // Time-based component
-			return fmt.Sprintf("%s%d%d%d@%s", parts[0], suffix1, suffix2, timeComponent, parts[1]), nil
+			suffix1 := g.faker.Number(10, 99)                      // 2-digit random number
+			suffix2 := g.faker.Number(100, 999)                    // 3-digit random number
+			counter := atomic.AddUint64(&g.emailCounter, 1) % 1000 // Atomic counter instead of time.Now()
+			return fmt.Sprintf("%s%d%d%d@%s", parts[0], suffix1, suffix2, counter, parts[1]), nil
 		}
 		return baseEmail, nil
 	case "random_name":

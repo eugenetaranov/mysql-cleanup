@@ -19,7 +19,6 @@ import (
 // setupTestMySQLContainer starts a MySQL container, seeds it, and returns the container, db, and cleanup func
 func setupTestMySQLContainer(t *testing.T) (container tc.Container, db *sql.DB, cleanup func()) {
 	t.Helper()
-	ctx := context.Background()
 
 	// Find seed files
 	dir := "tests/mysql/init"
@@ -32,11 +31,86 @@ func setupTestMySQLContainer(t *testing.T) (container tc.Container, db *sql.DB, 
 			t.Fatalf("Missing seed file: %s", f)
 		}
 	}
+
+	ctx := context.Background()
+
+	// Create MySQL container request
+	req := tc.ContainerRequest{
+		Image:        "mysql:8.0",
+		ExposedPorts: []string{"3306/tcp"},
+		Env: map[string]string{
+			"MYSQL_ROOT_PASSWORD": "root",
+			"MYSQL_DATABASE":      "acme_corp",
+		},
+		WaitingFor: nil, // Will be set below
+	}
+
+	// Start the container
+	container, err := tc.GenericContainer(ctx, tc.GenericContainerRequest{
+		ContainerRequest: req,
+		Started:          true,
+	})
+	if err != nil {
+		t.Fatalf("Failed to start MySQL container: %v", err)
+	}
+
+	// Get connection details
+	host, err := container.Host(ctx)
+	if err != nil {
+		t.Fatalf("Failed to get container host: %v", err)
+	}
+	port, err := container.MappedPort(ctx, "3306")
+	if err != nil {
+		t.Fatalf("Failed to get container port: %v", err)
+	}
+
+	// Build DSN and connect
+	dsn := fmt.Sprintf("root:root@tcp(%s:%s)/?multiStatements=true&parseTime=true", host, port.Port())
+
+	// Retry connection with backoff
+	var db2 *sql.DB
+	for i := 0; i < 30; i++ {
+		db2, err = sql.Open("mysql", dsn)
+		if err == nil {
+			err = db2.Ping()
+			if err == nil {
+				break
+			}
+		}
+		time.Sleep(time.Second)
+	}
+	if err != nil {
+		t.Fatalf("Failed to connect to MySQL container after retries: %v", err)
+	}
+
+	// Execute seed files
+	if err := execSQLFile(db2, createDBFile); err != nil {
+		t.Fatalf("Failed to execute create DB file: %v", err)
+	}
+	if err := execSQLFile(db2, schemaFile); err != nil {
+		t.Fatalf("Failed to execute schema file: %v", err)
+	}
+	if err := execSQLFile(db2, dataFile); err != nil {
+		t.Fatalf("Failed to execute data file: %v", err)
+	}
+
+	cleanup = func() {
+		db2.Close()
+		container.Terminate(ctx)
+	}
+
+	return container, db2, cleanup
+}
+
+// TestTableWithoutPrimaryKeyOffsetProcessing tests that tables without primary keys
+// can be processed using offset-based pagination
+func TestTableWithoutPrimaryKeyOffsetProcessing(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping test in short mode")
 	}
 
 	container, db, cleanup := setupTestMySQLContainer(t)
+	defer container.Terminate(context.Background())
 	defer cleanup()
 
 	// Create a table without primary key (junction table)
@@ -79,8 +153,8 @@ func setupTestMySQLContainer(t *testing.T) (container tc.Container, db *sql.DB, 
 		&TestContainerConnector{db: db},
 		configParser,
 		NewGofakeitGenerator(),
-		NewSchemaAwareGofakeitGenerator(NewStdLogger()),
-		NewStdLogger(),
+		NewSchemaAwareGofakeitGenerator(&StdLogger{}),
+		&StdLogger{},
 		2,   // workers
 		100, // batch size
 	)
@@ -97,7 +171,7 @@ func setupTestMySQLContainer(t *testing.T) (container tc.Container, db *sql.DB, 
 	}
 
 	// Verify that some rows were processed
-	if stats.TotalProcessed == 0 {
+	if stats.TotalRowsProcessed == 0 {
 		t.Error("No rows were processed")
 	}
 
@@ -111,7 +185,7 @@ func setupTestMySQLContainer(t *testing.T) (container tc.Container, db *sql.DB, 
 		t.Error("No rows were actually updated")
 	}
 
-	t.Logf("Successfully processed %d rows using offset-based processing", stats.TotalProcessed)
+	t.Logf("Successfully processed %d rows using offset-based processing", stats.TotalRowsProcessed)
 }
 
 // TestTableWithoutPrimaryKeyParallelProcessing tests that offset-based processing
@@ -122,6 +196,7 @@ func TestTableWithoutPrimaryKeyParallelProcessing(t *testing.T) {
 	}
 
 	container, db, cleanup := setupTestMySQLContainer(t)
+	defer container.Terminate(context.Background())
 	defer cleanup()
 
 	// Create a larger table without primary key
@@ -142,9 +217,6 @@ func TestTableWithoutPrimaryKeyParallelProcessing(t *testing.T) {
 	if initialCount < 1000 {
 		t.Fatalf("Expected at least 1000 rows, got %d", initialCount)
 	}
-
-	// Create service with multiple workers
-	service := createTestService(db, 4, "200") // 4 workers, 200 batch size
 
 	// Create custom config parser
 	configParser := &CustomTestConfigParser{
@@ -167,8 +239,8 @@ func TestTableWithoutPrimaryKeyParallelProcessing(t *testing.T) {
 		&TestContainerConnector{db: db},
 		configParser,
 		NewGofakeitGenerator(),
-		NewSchemaAwareGofakeitGenerator(NewStdLogger()),
-		NewStdLogger(),
+		NewSchemaAwareGofakeitGenerator(&StdLogger{}),
+		&StdLogger{},
 		4,   // workers
 		200, // batch size
 	)
@@ -185,8 +257,8 @@ func TestTableWithoutPrimaryKeyParallelProcessing(t *testing.T) {
 	}
 
 	// Verify that most rows were processed
-	if stats.TotalProcessed < initialCount*9/10 { // At least 90% processed
-		t.Errorf("Expected at least %d rows processed, got %d", initialCount*9/10, stats.TotalProcessed)
+	if stats.TotalRowsProcessed < initialCount*9/10 { // At least 90% processed
+		t.Errorf("Expected at least %d rows processed, got %d", initialCount*9/10, stats.TotalRowsProcessed)
 	}
 
 	// Verify that the data was actually changed
@@ -199,7 +271,7 @@ func TestTableWithoutPrimaryKeyParallelProcessing(t *testing.T) {
 		t.Errorf("Expected at least %d rows to be changed, got %d", initialCount*8/10, changedCount)
 	}
 
-	t.Logf("Successfully processed %d rows using parallel offset-based processing", stats.TotalProcessed)
+	t.Logf("Successfully processed %d rows using parallel offset-based processing", stats.TotalRowsProcessed)
 }
 
 // TestTableWithoutPrimaryKeyExcludeClause tests that exclude clauses work correctly
@@ -210,6 +282,7 @@ func TestTableWithoutPrimaryKeyExcludeClause(t *testing.T) {
 	}
 
 	container, db, cleanup := setupTestMySQLContainer(t)
+	defer container.Terminate(context.Background())
 	defer cleanup()
 
 	// Create a table without primary key
@@ -256,8 +329,8 @@ func TestTableWithoutPrimaryKeyExcludeClause(t *testing.T) {
 		&TestContainerConnector{db: db},
 		configParser,
 		NewGofakeitGenerator(),
-		NewSchemaAwareGofakeitGenerator(NewStdLogger()),
-		NewStdLogger(),
+		NewSchemaAwareGofakeitGenerator(&StdLogger{}),
+		&StdLogger{},
 		2,   // workers
 		100, // batch size
 	)
@@ -274,8 +347,8 @@ func TestTableWithoutPrimaryKeyExcludeClause(t *testing.T) {
 	}
 
 	// Verify that the correct number of rows were processed
-	if stats.TotalProcessed != expectedProcessed {
-		t.Errorf("Expected %d rows processed, got %d", expectedProcessed, stats.TotalProcessed)
+	if stats.TotalRowsProcessed != expectedProcessed {
+		t.Errorf("Expected %d rows processed, got %d", expectedProcessed, stats.TotalRowsProcessed)
 	}
 
 	// Verify that excluded rows were not changed
@@ -288,7 +361,7 @@ func TestTableWithoutPrimaryKeyExcludeClause(t *testing.T) {
 		t.Errorf("Expected %d excluded rows to remain unchanged, got %d", excludedCount, unchangedCount)
 	}
 
-	t.Logf("Successfully processed %d rows while excluding %d rows", stats.TotalProcessed, excludedCount)
+	t.Logf("Successfully processed %d rows while excluding %d rows", stats.TotalRowsProcessed, excludedCount)
 }
 
 // Helper functions for non-PK table tests
