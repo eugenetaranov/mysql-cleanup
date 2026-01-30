@@ -64,14 +64,15 @@ release-snapshot:
 release-check:
 	goreleaser check
 
-# Docker targets for integration testing
+# Docker targets
 docker-build:
-	docker compose build
+	docker build -t mysql-cleanup:local .
 
+# Test database targets
 docker-up:
-	docker compose up -d
+	docker compose -f tests/docker-compose.yml up -d
 
 docker-down:
-	docker compose down -v
+	docker compose -f tests/docker-compose.yml down -v
 
 docker-test: docker-up test-integration docker-down
