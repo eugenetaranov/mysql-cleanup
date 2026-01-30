@@ -39,5 +39,4 @@ Thumbs.db
 
 **/.task/
 .pre-commit-config.yaml
-mysql_cleanup
 mysql-cleanup

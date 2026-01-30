@@ -14,8 +14,8 @@ tasks:
     cmds:
       - task: clean
       - cd .. && mkdir -p bin
-      - cd .. && GOOS=darwin GOARCH=arm64 go build -o bin/mysql_cleanup-darwin-arm64
-      - cd .. && GOOS=linux GOARCH=amd64 go build -o bin/mysql_cleanup-linux-amd64
+      - cd .. && GOOS=darwin GOARCH=arm64 go build -o bin/mysql-cleanup-darwin-arm64 ./cmd/mysql-cleanup
+      - cd .. && GOOS=linux GOARCH=amd64 go build -o bin/mysql-cleanup-linux-amd64 ./cmd/mysql-cleanup
 
   up:
     desc: Start MySQL container with test databases
@@ -76,39 +76,25 @@ tasks:
   test-unit:
     desc: Run unit tests
     cmds:
-      - cd .. && go test -v
-    sources:
-      - ../*_test.go
-      - ../*.go
-    generates:
-      - ../mysql_cleanup.test
+      - cd .. && go test -v ./internal/cleanup/...
 
   test-integration:
     desc: Run integration tests with testcontainers
     cmds:
-      - cd .. && go test -v -tags=integration
+      - cd .. && go test -v -tags=integration ./integration/...
     env:
       TESTCONTAINERS_RYUK_DISABLED: "true"
 
   test-coverage:
     desc: Run unit tests with coverage report
     cmds:
-      - cd .. && go test -v -coverprofile=coverage.out
+      - cd .. && go test -v -coverprofile=coverage.out ./internal/cleanup/...
       - cd .. && go tool cover -html=coverage.out -o coverage.html
-    sources:
-      - ../*_test.go
-      - ../*.go
-    generates:
-      - ../coverage.out
-      - ../coverage.html
 
   test-short:
     desc: Run only short unit tests (skip integration tests)
     cmds:
-      - cd .. && go test -v -short
-    sources:
-      - ../*_test.go
-      - ../*.go
+      - cd .. && go test -v -short ./internal/cleanup/...
 
   test-all:
     desc: Run both unit tests and integration tests
@@ -122,4 +108,4 @@ tasks:
       - task: build
       - task: reset
       - sleep 10
-      - ../bin/mysql_cleanup -config config.yaml -host localhost -port 3306 -user test_user -password test_password -db acme_corp -table account_user -workers 3 -batch-size 3 -debug
+      - ../bin/mysql-cleanup -config config.yaml -host localhost -port 3306 -user test_user -password test_password -db acme_corp -table account_user -workers 3 -batch-size 3 -debug

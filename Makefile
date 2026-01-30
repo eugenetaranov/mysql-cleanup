@@ -22,7 +22,7 @@ test-integration:
 test-all: test test-integration
 
 clean:
-	rm -rf bin/ coverage.out coverage.html test_binary
+	rm -rf bin/ coverage.out coverage.html
 
 run: build
 	./$(BINARY) --help

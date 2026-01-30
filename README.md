@@ -32,7 +32,7 @@ For detailed Docker usage, see [DOCKER.md](DOCKER.md).
    ```
 3. Build the application:
    ```bash
-   go build -o bin/mysql_cleanup
+   go build -o bin/mysql-cleanup
    ```
 
 ## Usage
@@ -41,21 +41,21 @@ For detailed Docker usage, see [DOCKER.md](DOCKER.md).
 Process a specific table from the configuration:
 
 ```bash
-./bin/mysql_cleanup -host=localhost -user=root -port=3306 -password=mypass -db=mydb -table=mytable
+./bin/mysql-cleanup -host=localhost -user=root -port=3306 -password=mypass -db=mydb -table=mytable
 ```
 
 ### Multiple Tables Mode
 Process multiple specific tables from the configuration:
 
 ```bash
-./bin/mysql_cleanup -host=localhost -user=root -port=3306 -password=mypass -db=mydb -table=table1 -table=table2 -table=table3
+./bin/mysql-cleanup -host=localhost -user=root -port=3306 -password=mypass -db=mydb -table=table1 -table=table2 -table=table3
 ```
 
 ### All Tables Mode
 Process all tables defined in the configuration:
 
 ```bash
-./bin/mysql_cleanup -host=localhost -user=root -port=3306 -password=mypass -db=mydb -all-tables
+./bin/mysql-cleanup -host=localhost -user=root -port=3306 -password=mypass -db=mydb -all-tables
 ```
 
 ### Tables Without Primary Keys
@@ -64,7 +64,7 @@ The tool automatically detects tables without primary keys and uses offset-based
 
 ```bash
 # For junction/mapping tables without primary keys
-./bin/mysql_cleanup -host=localhost -user=root -port=3306 -password=mypass -db=mydb -table=email_history_to
+./bin/mysql-cleanup -host=localhost -user=root -port=3306 -password=mypass -db=mydb -table=email_history_to
 ```
 
 **Features for tables without primary keys:**
@@ -85,7 +85,7 @@ export PORT=3306
 export PASSWORD=mypass
 export DB=mydb
 export TABLE=mytable
-./bin/mysql_cleanup
+./bin/mysql-cleanup
 ```
 
 ### .env File
@@ -95,7 +95,7 @@ Create a `.env` file in the project directory (see `env.example` for reference):
 ```bash
 cp env.example .env
 # Edit .env with your values
-./bin/mysql_cleanup
+./bin/mysql-cleanup
 ```
 
 ## Parameters
@@ -136,16 +136,16 @@ You can limit processing to a specific range of primary key IDs using the `-rang
 **Examples:**
 ```bash
 # Process only IDs 1 to 1000
-./bin/mysql_cleanup -db=mydb -table=mytable -range 1:1000
+./bin/mysql-cleanup -db=mydb -table=mytable -range 1:1000
 
 # Process IDs 100,000 to 1,000,000
-./bin/mysql_cleanup -db=mydb -table=mytable -range 100K:1M
+./bin/mysql-cleanup -db=mydb -table=mytable -range 100K:1M
 
 # Process IDs from 1,000,000 and up
-./bin/mysql_cleanup -db=mydb -table=mytable -range 1M:
+./bin/mysql-cleanup -db=mydb -table=mytable -range 1M:
 
 # Process all rows (no range specified)
-./bin/mysql_cleanup -db=mydb -table=mytable
+./bin/mysql-cleanup -db=mydb -table=mytable
 ```
 
 ## Humanized Batch Sizes
@@ -168,16 +168,16 @@ You can specify batch sizes using humanized formats for easier configuration of 
 **Examples:**
 ```bash
 # Small batches for testing
-./bin/mysql_cleanup -db=mydb -table=mytable -batch-size 10
+./bin/mysql-cleanup -db=mydb -table=mytable -batch-size 10
 
 # Medium batches for production
-./bin/mysql_cleanup -db=mydb -table=mytable -batch-size 1K
+./bin/mysql-cleanup -db=mydb -table=mytable -batch-size 1K
 
 # Large batches for high-performance processing
-./bin/mysql_cleanup -db=mydb -table=mytable -batch-size 10K
+./bin/mysql-cleanup -db=mydb -table=mytable -batch-size 10K
 
 # Very large batches for massive datasets
-./bin/mysql_cleanup -db=mydb -table=mytable -batch-size 100K
+./bin/mysql-cleanup -db=mydb -table=mytable -batch-size 100K
 ```
 
 ## Configuration File Format
@@ -324,16 +324,16 @@ The application supports parallel processing with configurable workers and batch
 
 ```bash
 # Single-threaded processing (default)
-./bin/mysql_cleanup -host=localhost -user=root -db=mydb -table=mytable
+./bin/mysql-cleanup -host=localhost -user=root -db=mydb -table=mytable
 
 # Multi-threaded with 4 workers and small batches
-./bin/mysql_cleanup -host=localhost -user=root -db=mydb -table=mytable -workers=4 -batch-size=10
+./bin/mysql-cleanup -host=localhost -user=root -db=mydb -table=mytable -workers=4 -batch-size=10
 
 # High-performance with large batches
-./bin/mysql_cleanup -host=localhost -user=root -db=mydb -table=mytable -workers=4 -batch-size=1K
+./bin/mysql-cleanup -host=localhost -user=root -db=mydb -table=mytable -workers=4 -batch-size=1K
 
 # Very high-performance with very large batches
-./bin/mysql_cleanup -host=localhost -user=root -db=mydb -table=mytable -workers=8 -batch-size=10K
+./bin/mysql-cleanup -host=localhost -user=root -db=mydb -table=mytable -workers=8 -batch-size=10K
 ```
 
 ### Performance Optimization
@@ -360,10 +360,10 @@ Enable detailed logging with the `-debug` flag:
 
 ```bash
 # Normal operation (Info level and above)
-./bin/mysql_cleanup -host=localhost -user=root -db=mydb -table=mytable
+./bin/mysql-cleanup -host=localhost -user=root -db=mydb -table=mytable
 
 # Debug mode (all levels including Debug)
-./bin/mysql_cleanup -host=localhost -user=root -db=mydb -table=mytable -debug
+./bin/mysql-cleanup -host=localhost -user=root -db=mydb -table=mytable -debug
 ```
 
 Debug mode shows:
@@ -379,10 +379,10 @@ You can save logs to a file in addition to console output using the `-log-file` 
 
 ```bash
 # Save logs to a file
-./bin/mysql_cleanup -host=localhost -user=root -db=mydb -table=mytable -log-file=cleanup.log
+./bin/mysql-cleanup -host=localhost -user=root -db=mydb -table=mytable -log-file=cleanup.log
 
 # Save logs with debug mode
-./bin/mysql_cleanup -host=localhost -user=root -db=mydb -table=mytable -debug -log-file=debug.log
+./bin/mysql-cleanup -host=localhost -user=root -db=mydb -table=mytable -debug -log-file=debug.log
 ```
 
 **Benefits of log files:**

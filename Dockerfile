@@ -1,4 +1,4 @@
-# Multi-stage build for mysql_cleanup
+# Multi-stage build for mysql-cleanup
 # Build stage
 FROM golang:1.23-alpine AS builder
 
@@ -19,7 +19,7 @@ COPY . .
 
 # Build the application for the target architecture
 # Buildx will handle multi-arch builds by running this in separate containers
-RUN CGO_ENABLED=0 go build -a -installsuffix cgo -o mysql_cleanup ./cmd/mysql-cleanup
+RUN CGO_ENABLED=0 go build -a -installsuffix cgo -o mysql-cleanup ./cmd/mysql-cleanup
 
 # Final stage
 FROM alpine:latest
@@ -34,16 +34,16 @@ RUN addgroup -g 1001 -S appgroup && \
 WORKDIR /app
 
 # Copy the binary
-COPY --from=builder /app/mysql_cleanup /app/
+COPY --from=builder /app/mysql-cleanup /app/
 
 # Make the binary executable
-RUN chmod +x /app/mysql_cleanup
+RUN chmod +x /app/mysql-cleanup
 
 # Switch to non-root user
 USER appuser
 
 # Set the entrypoint
-ENTRYPOINT ["./mysql_cleanup"]
+ENTRYPOINT ["./mysql-cleanup"]
 
 # Default command
 CMD ["--help"]

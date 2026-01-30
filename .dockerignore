@@ -21,7 +21,7 @@ README.md
 Thumbs.db
 
 # Build artifacts
-mysql_cleanup
+mysql-cleanup
 *.exe
 *.dll
 *.so
